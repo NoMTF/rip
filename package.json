@@ -2,7 +2,7 @@
   "name": "rip",
   "version": "1.0.0",
   "private": true,
-  "description": "那些秋叶 — 一座为已逝跨性别姐妹而建的赛博墓碑",
+  "description": "勿忘我 rip.lgbt — a restrained memorial index",
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",
@@ -10,6 +10,6 @@
     "tail": "wrangler tail"
   },
   "devDependencies": {
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.85.0"
   }
 }
