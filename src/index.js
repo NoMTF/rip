@@ -61,12 +61,14 @@ async function getProfile(inputId) {
   const person = people.find(item => item.id === decodedId || item.path === decodedId);
   if (!person) return null;
 
-  try {
-    const info = await fetchJson(`/people/${encodeURIComponent(person.path)}/info.json`);
-    return normalizeProfile(person, info);
-  } catch {
-    return normalizeProfile(person, null);
-  }
+  const [infoResult, pageResult] = await Promise.allSettled([
+    fetchJson(`/people/${encodeURIComponent(person.path)}/info.json`),
+    fetchText(`/people/${encodeURIComponent(person.path)}/page.md`)
+  ]);
+
+  const info = infoResult.status === 'fulfilled' ? infoResult.value : null;
+  const pageMarkdown = pageResult.status === 'fulfilled' ? pageResult.value : '';
+  return normalizeProfile(person, info, pageMarkdown);
 }
 
 async function fetchJson(path) {
@@ -85,6 +87,22 @@ async function fetchJson(path) {
   return response.json();
 }
 
+async function fetchText(path) {
+  const response = await fetch(`${SITE.dataHost}${path}`, {
+    headers: { accept: 'text/markdown,text/plain,*/*' },
+    cf: {
+      cacheTtl: 900,
+      cacheEverything: true
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to read memorial page: ${response.status}`);
+  }
+
+  return response.text();
+}
+
 function normalizePerson(raw) {
   const path = String(raw.path || raw.id || '').trim();
   const id = String(raw.id || path).trim();
@@ -101,7 +119,7 @@ function normalizePerson(raw) {
   };
 }
 
-function normalizeProfile(person, info) {
+function normalizeProfile(person, info, pageMarkdown = '') {
   const facts = Array.isArray(info?.info)
     ? info.info
         .filter(pair => Array.isArray(pair) && pair.length >= 2)
@@ -127,6 +145,7 @@ function normalizeProfile(person, info) {
     profileUrl: toSourceAssetUrl(info?.profileUrl || person.profileUrl, person.path),
     facts,
     websites,
+    contentHtml: renderMarkdown(cleanMemorialMarkdown(stripFrontmatter(pageMarkdown)), person.path),
     commentCount: Array.isArray(info?.comments) ? info.comments.length : 0
   };
 }
@@ -143,6 +162,14 @@ function toSourceAssetUrl(template, personPath) {
   if (isSafeUrl(value)) return value;
   if (!value.includes('${path}')) return '';
   return `${SITE.dataHost}/people/${encodeURIComponent(personPath)}${value.replace('${path}', '')}`;
+}
+
+function toContentAssetUrl(template, personPath) {
+  if (!template) return '';
+  const value = String(template).trim().replaceAll('${path}', `${SITE.dataHost}/people/${encodeURIComponent(personPath)}`);
+  if (isSafeUrl(value)) return value;
+  if (value.startsWith('/')) return `${SITE.dataHost}${value}`;
+  return '';
 }
 
 function normalizePath(path) {
@@ -281,6 +308,12 @@ function renderDetailPage(profile) {
     ? `<img class="profile-avatar" src="${escapeAttr(profile.profileUrl)}" alt="" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'profile-mark',textContent:'${escapeAttr(firstGlyph(profile.name))}'}))">`
     : `<div class="profile-mark" aria-hidden="true">${escapeHtml(firstGlyph(profile.name))}</div>`;
   const desc = profile.desc || '此处保留这位逝者的基础信息。';
+  const story = profile.contentHtml
+    ? `<section class="profile-section story-section" aria-labelledby="story-title">
+      <h2 id="story-title">纪念正文</h2>
+      <div class="story">${profile.contentHtml}</div>
+    </section>`
+    : '';
   const facts = profile.facts.length
     ? profile.facts.map(fact => `
       <div class="fact-row">
@@ -332,6 +365,8 @@ function renderDetailPage(profile) {
         ${facts}
       </dl>
     </section>
+
+    ${story}
 
     <section class="profile-section" aria-labelledby="links-title">
       <h2 id="links-title">外部链接</h2>
@@ -889,19 +924,123 @@ h3 {
   font-size: 1.6rem;
 }
 
-.profile-section.subtle {
-  color: var(--muted);
-}
-
-.profile-section.subtle p {
-  max-width: 720px;
-  line-height: 1.9;
-}
-
 .facts {
   display: grid;
   gap: .55rem;
   margin: 0;
+}
+
+.story-section {
+  padding-top: 2.4rem;
+}
+
+.story {
+  max-width: 760px;
+  color: #26221d;
+  font-size: 1rem;
+  line-height: 1.95;
+}
+
+.story h3,
+.story h4,
+.story h5,
+.story h6 {
+  margin: 2.1rem 0 .8rem;
+  font-family: var(--serif);
+  line-height: 1.35;
+}
+
+.story h3 { font-size: 1.55rem; }
+.story h4 { font-size: 1.28rem; }
+.story h5,
+.story h6 { font-size: 1.08rem; }
+
+.story p {
+  margin: 1rem 0;
+}
+
+.story blockquote {
+  margin: 1.4rem 0;
+  padding: .15rem 0 .15rem 1.1rem;
+  border-left: 3px solid var(--petal);
+  color: #4d463d;
+}
+
+.story blockquote p {
+  margin: .7rem 0;
+}
+
+.story ul,
+.story ol {
+  padding-left: 1.35rem;
+}
+
+.story li {
+  margin: .45rem 0;
+}
+
+.story a {
+  color: var(--petal-dark);
+}
+
+.story code {
+  padding: .12rem .3rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .5);
+}
+
+.story-details {
+  margin: 1rem 0;
+  padding: .9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .34);
+}
+
+.story-details summary {
+  cursor: pointer;
+  color: var(--petal-dark);
+  font-weight: 700;
+}
+
+.story-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: .75rem;
+  margin: 1.4rem 0;
+}
+
+.story-gallery img,
+.story-inline-image {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .5);
+}
+
+.story-gallery img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+.story-inline-image {
+  margin: 1rem 0;
+  height: auto;
+}
+
+.footnotes {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: .92rem;
+}
+
+.footnotes ol {
+  padding-left: 1.25rem;
 }
 
 .fact-row {
@@ -1114,6 +1253,230 @@ function baseScripts() {
   input.addEventListener('input', update);
 })();
 `;
+}
+
+function stripFrontmatter(markdown) {
+  const text = String(markdown || '').replace(/\r\n/g, '\n');
+  if (!text.startsWith('---\n')) return text.trim();
+  const end = text.indexOf('\n---', 4);
+  if (end === -1) return text.trim();
+  const nextLine = text.indexOf('\n', end + 4);
+  if (nextLine === -1) return '';
+  return text.slice(nextLine + 1).trim();
+}
+
+function cleanMemorialMarkdown(markdown) {
+  const sourcePattern = /One\s+Among\s+Us|one-among\.us|\u90a3\u4e9b\u79cb\u53f6|\u6761\u76ee\u8d21\u732e|\u672c\u4e34\u65f6\u9875\u9762|Github\s*\u6570\u636e\u5e93|GitHub\s*\u6570\u636e\u5e93/i;
+  return String(markdown || '')
+    .replace(/\r\n/g, '\n')
+    .split(/\n{2,}/)
+    .map(block => block.trim())
+    .filter(block => block && !sourcePattern.test(block))
+    .join('\n\n')
+    .trim();
+}
+
+function renderMarkdown(markdown, personPath) {
+  const preprocessed = preprocessMarkdown(markdown);
+  const { lines, footnotes } = extractFootnotes(preprocessed.split('\n'));
+  let html = renderMarkdownLines(lines, personPath);
+
+  if (footnotes.length) {
+    html += `<section class="footnotes" aria-label="脚注"><ol>${footnotes.map(note => `
+      <li id="fn-${escapeAttr(note.id)}">${renderInline(note.content, personPath)}</li>`).join('')}</ol></section>`;
+  }
+
+  return html.trim();
+}
+
+function preprocessMarkdown(markdown) {
+  let text = String(markdown || '').replace(/\r\n/g, '\n');
+
+  text = text.replace(/<!--[\s\S]*?-->/g, '\n');
+  text = text.replace(/<PhotoScroll\s+photos=\{\[([\s\S]*?)\]\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
+  text = text.replace(/<PhotoScroll\s+photos=\{(\[[\s\S]*?\])\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
+  text = text.replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, summary) => `\n\n[[SUMMARY:${encodeURIComponent(summary.trim())}]]\n\n`);
+  text = text.replace(/<details[^>]*>/gi, '\n\n[[DETAILS_OPEN]]\n\n');
+  text = text.replace(/<\/details>/gi, '\n\n[[DETAILS_CLOSE]]\n\n');
+  text = text.replace(/<\/?BlurBlock[^>]*>/gi, '\n');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<div[^>]*>\s*<\/div>/gi, '\n');
+  text = text.replace(/<\/?[A-Z][A-Za-z0-9]*(?:\s[^>]*)?\/?>/g, '\n');
+
+  return text;
+}
+
+function galleryToken(markup) {
+  const photos = [];
+  String(markup || '').replace(/['"]([^'"]+)['"]/g, (_, url) => {
+    photos.push(encodeURIComponent(url));
+    return '';
+  });
+
+  return photos.length ? `\n\n[[GALLERY:${photos.join('|')}]]\n\n` : '\n';
+}
+
+function extractFootnotes(lines) {
+  const body = [];
+  const footnotes = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^\[\^([^\]]+)\]:\s*(.*)$/);
+    if (!match) {
+      body.push(lines[i]);
+      continue;
+    }
+
+    const [, id, firstLine] = match;
+    const noteLines = [firstLine];
+    while (i + 1 < lines.length && /^\s+/.test(lines[i + 1]) && lines[i + 1].trim()) {
+      noteLines.push(lines[i + 1].trim());
+      i++;
+    }
+    footnotes.push({ id, content: noteLines.join(' ') });
+  }
+
+  return { lines: body, footnotes };
+}
+
+function renderMarkdownLines(lines, personPath) {
+  let html = '';
+  let paragraph = [];
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    html += `<p>${renderInline(paragraph.join('\n'), personPath).replace(/\n/g, '<br>')}</p>`;
+    paragraph = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushParagraph();
+      continue;
+    }
+
+    if (trimmed === '[[DETAILS_OPEN]]') {
+      flushParagraph();
+      html += '<details class="story-details">';
+      continue;
+    }
+
+    if (trimmed === '[[DETAILS_CLOSE]]') {
+      flushParagraph();
+      html += '</details>';
+      continue;
+    }
+
+    const summary = trimmed.match(/^\[\[SUMMARY:(.*)\]\]$/);
+    if (summary) {
+      flushParagraph();
+      html += `<summary>${renderInline(decodeURIComponent(summary[1]), personPath)}</summary>`;
+      continue;
+    }
+
+    const gallery = trimmed.match(/^\[\[GALLERY:(.*)\]\]$/);
+    if (gallery) {
+      flushParagraph();
+      html += renderGallery(gallery[1], personPath);
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{2,5})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      const level = Math.min(heading[1].length + 1, 6);
+      html += `<h${level}>${renderInline(heading[2], personPath)}</h${level}>`;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      flushParagraph();
+      const quoteLines = [];
+      while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+        quoteLines.push(lines[i].trim().replace(/^>\s?/, ''));
+        i++;
+      }
+      i--;
+      html += `<blockquote>${quoteLines.map(item => `<p>${renderInline(item, personPath)}</p>`).join('')}</blockquote>`;
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^[-*]\s+/, ''));
+        i++;
+      }
+      i--;
+      html += `<ul>${items.map(item => `<li>${renderInline(item, personPath)}</li>`).join('')}</ul>`;
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^\d+\.\s+/, ''));
+        i++;
+      }
+      i--;
+      html += `<ol>${items.map(item => `<li>${renderInline(item, personPath)}</li>`).join('')}</ol>`;
+      continue;
+    }
+
+    paragraph.push(trimmed);
+  }
+
+  flushParagraph();
+  return html;
+}
+
+function renderGallery(value, personPath) {
+  const urls = String(value || '')
+    .split('|')
+    .map(item => toContentAssetUrl(decodeURIComponent(item), personPath))
+    .filter(Boolean);
+
+  if (!urls.length) return '';
+
+  return `<div class="story-gallery">${urls.map(url => `
+    <img src="${escapeAttr(url)}" alt="" loading="lazy" decoding="async">`).join('')}</div>`;
+}
+
+function renderInline(value, personPath) {
+  let html = escapeHtml(value);
+
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    const src = toContentAssetUrl(decodeHtml(url), personPath);
+    return src ? `<img class="story-inline-image" src="${escapeAttr(src)}" alt="${escapeAttr(decodeHtml(alt))}" loading="lazy" decoding="async">` : '';
+  });
+
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    const href = decodeHtml(url);
+    return isSafeUrl(href)
+      ? `<a href="${escapeAttr(href)}" target="_blank" rel="noopener">${label}</a>`
+      : label;
+  });
+
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  html = html.replace(/\[\^([^\]]+)\]/g, '<sup>[$1]</sup>');
+
+  return html;
+}
+
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
 }
 
 function escapeHtml(value) {
