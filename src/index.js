@@ -1,3 +1,5 @@
+import { DurableObject } from 'cloudflare:workers';
+
 /**
  * 勿忘我 · rip.lgbt
  */
@@ -10,7 +12,7 @@ const SITE = {
 };
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = normalizePath(url.pathname);
 
@@ -28,6 +30,21 @@ export default {
       if (apiOne) {
         const profile = await getProfile(apiOne[1]);
         return profile ? json(profile) : json({ error: 'not_found' }, 404);
+      }
+
+      const engagement = path.match(/^\/api\/memorials\/([^/]+)\/engagement$/);
+      if (engagement) {
+        return handleEngagement(request, env, engagement[1], 'summary');
+      }
+
+      const comments = path.match(/^\/api\/memorials\/([^/]+)\/comments$/);
+      if (comments) {
+        return handleEngagement(request, env, comments[1], 'comments');
+      }
+
+      const flowers = path.match(/^\/api\/memorials\/([^/]+)\/flowers$/);
+      if (flowers) {
+        return handleEngagement(request, env, flowers[1], 'flowers');
       }
 
       const pageOne = path.match(/^\/memorial\/([^/]+)$/);
@@ -48,6 +65,137 @@ export default {
   }
 };
 
+const COMMENT_LIMIT = 1000;
+const AUTHOR_LIMIT = 40;
+const COMMENT_COOLDOWN_MS = 30_000;
+const FLOWER_COOLDOWN_MS = 86_400_000;
+
+export class MemorialEngagement extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    ctx.blockConcurrencyWhile(async () => {
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS comments (
+          id TEXT PRIMARY KEY,
+          author TEXT NOT NULL,
+          content TEXT NOT NULL,
+          ip_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          hidden_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS comments_visible_idx
+          ON comments(hidden_at, created_at);
+        CREATE INDEX IF NOT EXISTS comments_ip_idx
+          ON comments(ip_hash, created_at);
+
+        CREATE TABLE IF NOT EXISTS flowers (
+          id TEXT PRIMARY KEY,
+          total INTEGER NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS flower_events (
+          id TEXT PRIMARY KEY,
+          ip_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS flower_events_ip_idx
+          ON flower_events(ip_hash, created_at);
+      `);
+    });
+  }
+
+  getSummary() {
+    return {
+      flowers: this.getFlowerCount(),
+      comments: this.getComments()
+    };
+  }
+
+  getComments() {
+    return this.sql.exec(`
+      SELECT id, author, content, created_at AS createdAt
+      FROM comments
+      WHERE hidden_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 200
+    `).toArray();
+  }
+
+  addComment(payload) {
+    const author = cleanAuthor(payload?.author);
+    const content = cleanComment(payload?.content);
+    const ipHash = String(payload?.ipHash || 'unknown');
+
+    if (!content) {
+      return { ok: false, error: 'empty_content', message: '留言不能为空。' };
+    }
+
+    const latest = this.sql.exec(`
+      SELECT created_at AS createdAt
+      FROM comments
+      WHERE ip_hash = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, ipHash).toArray()[0];
+
+    if (latest && Date.now() - Date.parse(latest.createdAt) < COMMENT_COOLDOWN_MS) {
+      return { ok: false, error: 'too_fast', message: '留言太快了，请稍后再试。' };
+    }
+
+    const id = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    this.sql.exec(`
+      INSERT INTO comments (id, author, content, ip_hash, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `, id, author, content, ipHash, createdAt);
+
+    const comment = this.sql.exec(`
+      SELECT id, author, content, created_at AS createdAt
+      FROM comments
+      WHERE id = ?
+    `, id).toArray()[0];
+
+    return { ok: true, comment, comments: this.getComments(), flowers: this.getFlowerCount() };
+  }
+
+  addFlower(payload) {
+    const ipHash = String(payload?.ipHash || 'unknown');
+    const latest = this.sql.exec(`
+      SELECT created_at AS createdAt
+      FROM flower_events
+      WHERE ip_hash = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, ipHash).toArray()[0];
+
+    if (latest && Date.now() - Date.parse(latest.createdAt) < FLOWER_COOLDOWN_MS) {
+      return { ok: true, counted: false, flowers: this.getFlowerCount() };
+    }
+
+    const createdAt = new Date().toISOString();
+    this.sql.exec(`
+      INSERT INTO flower_events (id, ip_hash, created_at)
+      VALUES (?, ?, ?)
+    `, crypto.randomUUID(), ipHash, createdAt);
+    this.sql.exec(`
+      INSERT INTO flowers (id, total, updated_at)
+      VALUES ('main', 1, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        total = total + 1,
+        updated_at = excluded.updated_at
+    `, createdAt);
+
+    return { ok: true, counted: true, flowers: this.getFlowerCount() };
+  }
+
+  getFlowerCount() {
+    const row = this.sql.exec("SELECT total FROM flowers WHERE id = 'main'").toArray()[0];
+    return Number(row?.total || 0);
+  }
+}
+
 async function getPeople() {
   const list = await fetchJson('/people-list.json');
   return list
@@ -55,10 +203,14 @@ async function getPeople() {
     .filter(person => person.id && person.name);
 }
 
-async function getProfile(inputId) {
+async function getPerson(inputId) {
   const people = await getPeople();
   const decodedId = decodeURIComponent(inputId);
-  const person = people.find(item => item.id === decodedId || item.path === decodedId);
+  return people.find(item => item.id === decodedId || item.path === decodedId) || null;
+}
+
+async function getProfile(inputId) {
+  const person = await getPerson(inputId);
   if (!person) return null;
 
   const [infoResult, pageResult] = await Promise.allSettled([
@@ -101,6 +253,58 @@ async function fetchText(path) {
   }
 
   return response.text();
+}
+
+async function handleEngagement(request, env, inputId, action) {
+  if (!env?.ENGAGEMENT) {
+    return dynamicJson({ error: 'engagement_unavailable' }, 503);
+  }
+
+  const person = await getPerson(inputId);
+  if (!person) return dynamicJson({ error: 'not_found' }, 404);
+
+  const stub = env.ENGAGEMENT.getByName(`person:${person.path}`);
+  const ipHash = await hashVisitor(request, env);
+
+  if (action === 'summary') {
+    if (request.method !== 'GET') return methodNotAllowed('GET');
+    return dynamicJson(await stub.getSummary());
+  }
+
+  if (action === 'comments') {
+    if (request.method === 'GET') {
+      return dynamicJson({ comments: (await stub.getSummary()).comments });
+    }
+    if (request.method !== 'POST') return methodNotAllowed('GET, POST');
+
+    let payload;
+    try {
+      payload = await readJsonBody(request);
+    } catch (error) {
+      return dynamicJson({ ok: false, error: 'bad_request', message: error.message }, 400);
+    }
+
+    if (payload.website) {
+      return dynamicJson({ ok: true, ignored: true }, 202);
+    }
+
+    const result = await stub.addComment({
+      author: payload.author,
+      content: payload.content,
+      ipHash
+    });
+    return dynamicJson(result, result.ok ? 201 : result.error === 'too_fast' ? 429 : 400);
+  }
+
+  if (action === 'flowers') {
+    if (request.method === 'GET') {
+      return dynamicJson({ flowers: (await stub.getSummary()).flowers });
+    }
+    if (request.method !== 'POST') return methodNotAllowed('GET, POST');
+    return dynamicJson(await stub.addFlower({ ipHash }));
+  }
+
+  return dynamicJson({ error: 'not_found' }, 404);
 }
 
 function normalizePerson(raw) {
@@ -194,6 +398,73 @@ function json(data, status = 200) {
       'cache-control': 'public, max-age=300'
     }
   });
+}
+
+function dynamicJson(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store'
+    }
+  });
+}
+
+function methodNotAllowed(allow) {
+  return new Response(JSON.stringify({ error: 'method_not_allowed' }, null, 2), {
+    status: 405,
+    headers: {
+      allow,
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store'
+    }
+  });
+}
+
+async function readJsonBody(request) {
+  const length = Number(request.headers.get('content-length') || 0);
+  if (length > 4096) {
+    throw new Error('Request body is too large');
+  }
+
+  const text = await request.text();
+  if (text.length > 4096) {
+    throw new Error('Request body is too large');
+  }
+
+  if (!text.trim()) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('Invalid JSON body');
+  }
+}
+
+async function hashVisitor(request, env) {
+  const address = request.headers.get('cf-connecting-ip')
+    || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    || 'local';
+  const userAgent = request.headers.get('user-agent') || 'unknown';
+  const salt = env?.IP_HASH_SALT || SITE.subtitle;
+  const data = new TextEncoder().encode(`${salt}:${address}:${userAgent}`);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function cleanAuthor(value) {
+  return String(value || '访客')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, AUTHOR_LIMIT) || '访客';
+}
+
+function cleanComment(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, COMMENT_LIMIT);
 }
 
 function notFound() {
@@ -308,6 +579,15 @@ function renderDetailPage(profile) {
     ? `<img class="profile-avatar" src="${escapeAttr(profile.profileUrl)}" alt="" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'profile-mark',textContent:'${escapeAttr(firstGlyph(profile.name))}'}))">`
     : `<div class="profile-mark" aria-hidden="true">${escapeHtml(firstGlyph(profile.name))}</div>`;
   const desc = profile.desc || '此处保留这位逝者的基础信息。';
+  const flowerAction = `
+        <div class="profile-actions">
+          <button class="flower-button compact" type="button" data-flower-button aria-label="为 ${escapeAttr(profile.name)} 献花">
+            <span aria-hidden="true">✦</span>
+            <span>献花</span>
+            <strong data-flower-count>0</strong>
+          </button>
+          <a class="button quiet" href="#remembrance">留言</a>
+        </div>`;
   const story = profile.contentHtml
     ? `<section class="profile-section story-section" aria-labelledby="story-title">
       <h2 id="story-title">纪念正文</h2>
@@ -356,6 +636,7 @@ function renderDetailPage(profile) {
         <h1>${escapeHtml(profile.name)}</h1>
         <p class="profile-date">${escapeHtml(formatDate(profile.departure))}</p>
         <p class="profile-desc">${escapeHtml(desc)}</p>
+        ${flowerAction}
       </div>
     </header>
 
@@ -367,6 +648,8 @@ function renderDetailPage(profile) {
     </section>
 
     ${story}
+
+    ${renderEngagementSection(profile)}
 
     <section class="profile-section" aria-labelledby="links-title">
       <h2 id="links-title">外部链接</h2>
@@ -380,6 +663,54 @@ function renderDetailPage(profile) {
 ${renderFooter()}
 `
   });
+}
+
+function renderEngagementSection(profile) {
+  return `
+    <section id="remembrance" class="profile-section engagement-section" data-engagement data-person-id="${escapeAttr(profile.path)}" aria-labelledby="remembrance-title">
+      <div class="engagement-head">
+        <div>
+          <p class="eyebrow">REMEMBRANCE</p>
+          <h2 id="remembrance-title">献花与留言</h2>
+        </div>
+        <button class="flower-button" type="button" data-flower-button aria-label="为 ${escapeAttr(profile.name)} 献花">
+          <span aria-hidden="true">✦</span>
+          <span>献花</span>
+          <strong data-flower-count>0</strong>
+        </button>
+      </div>
+
+      <div class="comment-shell">
+        <form class="comment-form" data-comment-form>
+          <label>
+            <span>称呼</span>
+            <input name="author" maxlength="${AUTHOR_LIMIT}" autocomplete="name" placeholder="访客">
+          </label>
+          <label>
+            <span>留言</span>
+            <textarea name="content" maxlength="${COMMENT_LIMIT}" rows="5" required placeholder="写下一句想留下的话"></textarea>
+          </label>
+          <label class="hp-field" aria-hidden="true">
+            <span>Website</span>
+            <input name="website" tabindex="-1" autocomplete="off">
+          </label>
+          <div class="comment-actions">
+            <button class="button primary" type="submit">发送留言</button>
+            <p class="comment-status" data-comment-status role="status"></p>
+          </div>
+        </form>
+
+        <div class="comments-area">
+          <div class="comments-title">
+            <h3>留言</h3>
+            <span data-comment-count>0 条</span>
+          </div>
+          <ol class="comments-list" data-comments-list>
+            <li class="comment-empty">正在读取留言…</li>
+          </ol>
+        </div>
+      </div>
+    </section>`;
 }
 
 function renderNotFound() {
@@ -446,20 +777,20 @@ function renderFooter() {
 function baseStyles() {
   return `
 :root {
-  color-scheme: light;
-  --paper: #f7f3ec;
-  --paper-2: #eee7db;
-  --ink: #171512;
-  --muted: #6f675d;
-  --faint: #9c9388;
-  --line: rgba(23, 21, 18, .13);
-  --line-strong: rgba(23, 21, 18, .22);
-  --petal: #5b8d86;
-  --petal-dark: #2f5d57;
-  --blue: #5b8aa0;
-  --rose: #b56b7d;
-  --card: rgba(255, 255, 255, .48);
-  --shadow: 0 24px 70px rgba(51, 41, 28, .09);
+  color-scheme: dark;
+  --paper: #050509;
+  --paper-2: #0d0d16;
+  --ink: #fbf7ff;
+  --muted: #b8b1c3;
+  --faint: #7f7a89;
+  --line: rgba(251, 247, 255, .13);
+  --line-strong: rgba(251, 247, 255, .24);
+  --petal: #f5a9b8;
+  --petal-dark: #f5a9b8;
+  --blue: #5bcefa;
+  --rose: #f5a9b8;
+  --card: rgba(11, 12, 20, .72);
+  --shadow: 0 28px 90px rgba(0, 0, 0, .36);
   --radius: 8px;
   --serif: Georgia, 'Noto Serif SC', 'Songti SC', STSong, serif;
   --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -478,8 +809,8 @@ body {
   color: var(--ink);
   font-family: var(--sans);
   background:
-    linear-gradient(90deg, rgba(91, 138, 160, .08), transparent 22%, transparent 78%, rgba(181, 107, 125, .08)),
-    radial-gradient(circle at top left, rgba(91, 141, 134, .14), transparent 32rem),
+    linear-gradient(120deg, rgba(91, 206, 250, .12), transparent 26%, transparent 72%, rgba(245, 169, 184, .14)),
+    linear-gradient(180deg, #050509 0%, #0b0c15 56%, #08060b 100%),
     var(--paper);
 }
 
@@ -490,8 +821,9 @@ body::before {
   pointer-events: none;
   opacity: .18;
   background-image:
-    linear-gradient(rgba(23, 21, 18, .04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(23, 21, 18, .04) 1px, transparent 1px);
+    linear-gradient(rgba(251, 247, 255, .05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(251, 247, 255, .05) 1px, transparent 1px),
+    linear-gradient(120deg, transparent 0%, rgba(91, 206, 250, .08) 48%, rgba(245, 169, 184, .08) 52%, transparent 100%);
   background-size: 44px 44px;
   mask-image: linear-gradient(to bottom, #000 0%, transparent 78%);
 }
@@ -1087,6 +1419,395 @@ h3 {
   color: var(--muted);
 }
 
+.site-header {
+  background: rgba(5, 5, 9, .72);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+.brand-mark,
+.petal,
+.profile-mark {
+  border: 1px solid transparent;
+  color: var(--ink);
+  background:
+    linear-gradient(var(--paper-2), var(--paper-2)) padding-box,
+    linear-gradient(145deg, var(--blue), #fff, var(--rose)) border-box;
+  box-shadow: 0 12px 38px rgba(91, 206, 250, .14);
+}
+
+.brand strong {
+  color: var(--ink);
+}
+
+.brand small,
+.header-links,
+.back-link,
+.result-count {
+  color: var(--muted);
+}
+
+.eyebrow {
+  color: var(--blue);
+}
+
+.hero {
+  position: relative;
+  min-height: min(720px, calc(100svh - 8rem));
+  padding-top: clamp(3.6rem, 8vw, 6.4rem);
+  padding-bottom: clamp(2.6rem, 5vw, 3.8rem);
+}
+
+.hero::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: clamp(3rem, 9vw, 7rem);
+  width: min(22rem, 52vw);
+  height: 2px;
+  background: linear-gradient(90deg, var(--blue), #fff, var(--rose), transparent);
+  opacity: .8;
+}
+
+.hero-copy,
+.hero-panel,
+.care-note,
+.section-head,
+.profile-hero,
+.profile-section,
+.person-card {
+  animation: rise .72s cubic-bezier(.2, .78, .2, 1) both;
+}
+
+.hero-panel,
+.person-link,
+.care-note,
+.profile-section,
+.story-details,
+.external-links a,
+.comment-form,
+.comments-area {
+  border-color: var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .08), rgba(255, 255, 255, .035));
+  box-shadow: var(--shadow);
+}
+
+.hero-panel {
+  backdrop-filter: blur(22px);
+}
+
+.hero-panel div,
+.profile-hero,
+.profile-section,
+.site-footer {
+  border-color: var(--line);
+}
+
+.button,
+.search input,
+.comment-form input,
+.comment-form textarea {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, .07);
+}
+
+.button.primary {
+  color: #07070b;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--blue), #fff 48%, var(--rose));
+  box-shadow: 0 14px 38px rgba(245, 169, 184, .16);
+}
+
+.button.quiet {
+  color: var(--ink);
+}
+
+.button:hover,
+.person-link:hover,
+.external-links a:hover {
+  border-color: rgba(255, 255, 255, .36);
+}
+
+.person-link {
+  background: rgba(255, 255, 255, .055);
+  backdrop-filter: blur(14px);
+}
+
+.person-link:hover {
+  background: rgba(255, 255, 255, .095);
+}
+
+.person-avatar,
+.profile-avatar,
+.story-gallery img,
+.story-inline-image {
+  border-color: rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .06);
+}
+
+.person-name,
+.profile h1,
+.profile-desc,
+.story {
+  color: var(--ink);
+}
+
+.person-date,
+.person-id,
+.person-desc,
+.profile-copy,
+.fact-row dt,
+.footnotes,
+.not-found p,
+.site-footer {
+  color: var(--muted);
+}
+
+.profile-date,
+.story a,
+.story-details summary {
+  color: var(--blue);
+}
+
+.story {
+  max-width: 780px;
+}
+
+.story blockquote {
+  border-left-color: var(--rose);
+  color: #ded6e5;
+  background: linear-gradient(90deg, rgba(245, 169, 184, .08), transparent);
+}
+
+.story code {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, .08);
+}
+
+.fact-row {
+  border-bottom-color: rgba(255, 255, 255, .08);
+}
+
+.external-links a {
+  background: rgba(255, 255, 255, .06);
+}
+
+.engagement-section {
+  margin: 2rem 0;
+  padding: clamp(1.2rem, 3vw, 2rem);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: calc(var(--radius) + 6px);
+  background:
+    linear-gradient(135deg, rgba(91, 206, 250, .11), transparent 28%),
+    linear-gradient(315deg, rgba(245, 169, 184, .12), transparent 32%),
+    rgba(255, 255, 255, .055);
+  box-shadow: var(--shadow);
+}
+
+.engagement-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.engagement-head h2 {
+  margin-bottom: 0;
+}
+
+.flower-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .55rem;
+  min-height: 2.75rem;
+  padding: .7rem .9rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #07070b;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+  background:
+    linear-gradient(135deg, var(--blue), #fff 48%, var(--rose)) padding-box,
+    linear-gradient(135deg, var(--blue), var(--rose)) border-box;
+  box-shadow: 0 18px 42px rgba(91, 206, 250, .14);
+  transition: transform .18s ease, filter .18s ease, opacity .18s ease;
+}
+
+.flower-button.compact {
+  min-height: 2.6rem;
+}
+
+.flower-button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.flower-button:disabled {
+  cursor: wait;
+  opacity: .74;
+}
+
+.flower-button[data-bloom="true"] {
+  animation: bloom .52s ease;
+}
+
+.flower-button strong {
+  min-width: 1.8rem;
+  padding: .15rem .45rem;
+  border-radius: 999px;
+  color: var(--ink);
+  background: rgba(5, 5, 9, .76);
+}
+
+.comment-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, .9fr) minmax(0, 1.1fr);
+  gap: 1rem;
+}
+
+.comment-form,
+.comments-area {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.comment-form {
+  display: grid;
+  gap: .85rem;
+}
+
+.comment-form label {
+  display: grid;
+  gap: .4rem;
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+.comment-form input,
+.comment-form textarea {
+  width: 100%;
+  border-radius: var(--radius);
+  padding: .75rem .85rem;
+  font: inherit;
+  outline: none;
+  resize: vertical;
+}
+
+.comment-form input:focus,
+.comment-form textarea:focus,
+.search input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(91, 206, 250, .16);
+}
+
+.hp-field {
+  position: absolute;
+  left: -100vw;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.comment-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+
+.comment-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+.comment-status[data-tone="ok"] {
+  color: var(--blue);
+}
+
+.comment-status[data-tone="error"] {
+  color: var(--rose);
+}
+
+.comments-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .85rem;
+}
+
+.comments-title h3 {
+  font-size: 1.2rem;
+}
+
+.comments-title span {
+  color: var(--muted);
+  font-size: .9rem;
+}
+
+.comments-list {
+  display: grid;
+  gap: .75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comment-item {
+  padding: .85rem;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: var(--radius);
+  background: rgba(5, 5, 9, .34);
+}
+
+.comment-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .75rem;
+  color: var(--muted);
+  font-size: .86rem;
+}
+
+.comment-meta strong {
+  color: var(--ink);
+}
+
+.comment-content {
+  margin: .55rem 0 0;
+  color: #eee8f4;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.comment-empty {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bloom {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
 .not-found {
   min-height: 80vh;
   display: grid;
@@ -1176,6 +1897,14 @@ h3 {
     align-items: start;
   }
 
+  .comment-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .engagement-head {
+    align-items: flex-start;
+  }
+
   .search {
     width: 100%;
   }
@@ -1213,6 +1942,16 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .engagement-head,
+  .comment-actions,
+  .profile-actions {
+    display: grid;
+  }
+
+  .flower-button {
+    width: 100%;
+  }
+
   .fact-row {
     grid-template-columns: 1fr;
     gap: .3rem;
@@ -1223,6 +1962,7 @@ h3 {
   *,
   *::before,
   *::after {
+    animation: none !important;
     scroll-behavior: auto !important;
     transition: none !important;
   }
@@ -1251,6 +1991,151 @@ function baseScripts() {
   };
 
   input.addEventListener('input', update);
+})();
+
+(() => {
+  const root = document.querySelector('[data-engagement]');
+  if (!root) return;
+
+  const personId = root.dataset.personId;
+  const countNodes = Array.from(document.querySelectorAll('[data-flower-count]'));
+  const flowerButtons = Array.from(document.querySelectorAll('[data-flower-button]'));
+  const list = root.querySelector('[data-comments-list]');
+  const count = root.querySelector('[data-comment-count]');
+  const form = root.querySelector('[data-comment-form]');
+  const status = root.querySelector('[data-comment-status]');
+
+  const setFlowerCount = value => {
+    for (const node of countNodes) node.textContent = String(value || 0);
+  };
+
+  const setStatus = (message, tone = '') => {
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  };
+
+  const formatDate = value => {
+    try {
+      return new Intl.DateTimeFormat('zh-CN', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      }).format(new Date(value));
+    } catch {
+      return value || '';
+    }
+  };
+
+  const renderComments = comments => {
+    if (!list || !count) return;
+    count.textContent = (comments?.length || 0) + ' 条';
+    list.replaceChildren();
+
+    if (!comments?.length) {
+      const empty = document.createElement('li');
+      empty.className = 'comment-empty';
+      empty.textContent = '还没有留言。';
+      list.append(empty);
+      return;
+    }
+
+    for (const item of comments) {
+      const li = document.createElement('li');
+      li.className = 'comment-item';
+
+      const meta = document.createElement('div');
+      meta.className = 'comment-meta';
+
+      const author = document.createElement('strong');
+      author.textContent = item.author || '访客';
+
+      const time = document.createElement('time');
+      time.dateTime = item.createdAt || '';
+      time.textContent = formatDate(item.createdAt);
+
+      const content = document.createElement('p');
+      content.className = 'comment-content';
+      content.textContent = item.content || '';
+
+      meta.append(author, time);
+      li.append(meta, content);
+      list.append(li);
+    }
+  };
+
+  const load = async () => {
+    try {
+      const response = await fetch('/api/memorials/' + encodeURIComponent(personId) + '/engagement');
+      const data = await response.json();
+      setFlowerCount(data.flowers);
+      renderComments(data.comments);
+    } catch {
+      if (list) {
+        list.replaceChildren(Object.assign(document.createElement('li'), {
+          className: 'comment-empty',
+          textContent: '留言暂时读取失败。'
+        }));
+      }
+    }
+  };
+
+  for (const button of flowerButtons) {
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/memorials/' + encodeURIComponent(personId) + '/flowers', {
+          method: 'POST'
+        });
+        const data = await response.json();
+        setFlowerCount(data.flowers);
+        for (const item of flowerButtons) {
+          item.dataset.bloom = 'true';
+          setTimeout(() => { delete item.dataset.bloom; }, 540);
+        }
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
+  if (form) {
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const payload = {
+        author: data.get('author'),
+        content: data.get('content'),
+        website: data.get('website')
+      };
+
+      setStatus('发送中…');
+      form.querySelector('button[type="submit"]').disabled = true;
+
+      try {
+        const response = await fetch('/api/memorials/' + encodeURIComponent(personId) + '/comments', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+
+        if (!response.ok || !result.ok) {
+          setStatus(result.message || '留言没有发送成功。', 'error');
+          return;
+        }
+
+        form.reset();
+        setStatus('已留下。', 'ok');
+        renderComments(result.comments || []);
+      } catch {
+        setStatus('留言没有发送成功。', 'error');
+      } finally {
+        form.querySelector('button[type="submit"]').disabled = false;
+      }
+    });
+  }
+
+  load();
 })();
 `;
 }

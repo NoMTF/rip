@@ -11,3 +11,11 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 SITE_TITLE = "勿忘我"
 SITE_SUBTITLE = "rip.lgbt"
+
+[[durable_objects.bindings]]
+name = "ENGAGEMENT"
+class_name = "MemorialEngagement"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MemorialEngagement"]
