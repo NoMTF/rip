@@ -1,0 +1,15 @@
+{
+  "name": "rip",
+  "version": "1.0.0",
+  "private": true,
+  "description": "那些秋叶 — 一座为已逝跨性别姐妹而建的赛博墓碑",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

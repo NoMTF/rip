@@ -1,0 +1,18 @@
+name = "rip"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 可选：绑定 KV 用于持久化"献花"和"点烛"计数
+# [[kv_namespaces]]
+# binding = "MEMORIAL_KV"
+# id = "your-kv-namespace-id"
+
+# 可选：自定义域名
+# routes = [
+#   { pattern = "memorial.example.com/*", zone_name = "example.com" }
+# ]
+
+[vars]
+SITE_TITLE = "勿忘我"
+SITE_SUBTITLE = "REST IN PEACE"
