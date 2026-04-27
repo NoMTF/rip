@@ -81,7 +81,39 @@ const AUTHOR_LIMIT = 40;
 const COMMENT_COOLDOWN_MS = 30_000;
 const FLOWER_COOLDOWN_MS = 86_400_000;
 const SUBMISSION_BODY_LIMIT = 30_000;
+const SUBMISSION_UPLOAD_LIMIT = 12_000_000;
+const SUBMISSION_FILE_LIMIT = 5_000_000;
+const SUBMISSION_ATTACHMENT_LIMIT = 6;
 const SUBMISSION_COOLDOWN_MS = 120_000;
+const SUBMISSION_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const SUBMISSION_TEXT_FIELDS = [
+  'entryId',
+  'displayName',
+  'avatar',
+  'description',
+  'location',
+  'birthDate',
+  'deathDate',
+  'submitterName',
+  'submitterContact',
+  'relationship',
+  'contentWarnings',
+  'intro',
+  'life',
+  'death',
+  'remembrance',
+  'alias',
+  'age',
+  'identity',
+  'pronouns',
+  'links',
+  'images',
+  'works',
+  'sources',
+  'sourceNote',
+  'custom',
+  'website'
+];
 
 export class MemorialEngagement extends DurableObject {
   constructor(ctx, env) {
@@ -354,8 +386,9 @@ async function handleSubmission(request, env) {
   if (request.method !== 'POST') return methodNotAllowed('POST');
 
   let payload;
+  let attachments;
   try {
-    payload = await readJsonBody(request, SUBMISSION_BODY_LIMIT);
+    ({ payload, attachments } = await readSubmissionRequest(request));
   } catch (error) {
     return dynamicJson({ ok: false, error: 'bad_request', message: error.message }, 400);
   }
@@ -365,7 +398,7 @@ async function handleSubmission(request, env) {
   }
 
   const submission = normalizeSubmission(payload);
-  const errors = validateSubmission(submission);
+  const errors = validateSubmission(submission, attachments);
   if (errors.length) {
     return dynamicJson({ ok: false, error: 'validation_error', message: errors[0], errors }, 400);
   }
@@ -384,8 +417,8 @@ async function handleSubmission(request, env) {
     if (!throttle.ok) return dynamicJson(throttle, 429);
   }
 
-  const markdown = buildSubmissionMarkdown(submission);
-  const email = await sendSubmissionEmail(env, submission, markdown, request);
+  const markdown = buildSubmissionMarkdown(submission, attachments);
+  const email = await sendSubmissionEmail(env, submission, markdown, request, attachments);
   if (!email.ok) {
     return dynamicJson({
       ok: false,
@@ -532,6 +565,89 @@ async function readJsonBody(request, maxLength = 4096) {
   }
 }
 
+async function readSubmissionRequest(request) {
+  const contentType = (request.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('multipart/form-data')) {
+    return { payload: await readJsonBody(request, SUBMISSION_BODY_LIMIT), attachments: [] };
+  }
+
+  const length = Number(request.headers.get('content-length') || 0);
+  if (length > SUBMISSION_UPLOAD_LIMIT) {
+    throw new Error('图片总大小不能超过 12MB。');
+  }
+
+  const form = await request.formData();
+  const payload = Object.fromEntries(SUBMISSION_TEXT_FIELDS.map(field => {
+    const value = form.get(field);
+    return [field, typeof value === 'string' ? value : ''];
+  }));
+
+  const attachments = [];
+  let totalSize = 0;
+  totalSize = await collectSubmissionFiles(form, 'avatarFile', 'avatar', attachments, totalSize);
+  totalSize = await collectSubmissionFiles(form, 'imageFiles', 'image', attachments, totalSize);
+
+  return { payload, attachments };
+}
+
+async function collectSubmissionFiles(form, fieldName, role, attachments, totalSize) {
+  for (const file of form.getAll(fieldName)) {
+    if (!isUploadFile(file) || !file.size) continue;
+
+    if (attachments.length >= SUBMISSION_ATTACHMENT_LIMIT) {
+      throw new Error(`图片附件最多 ${SUBMISSION_ATTACHMENT_LIMIT} 个。`);
+    }
+    if (file.size > SUBMISSION_FILE_LIMIT) {
+      throw new Error('单张图片不能超过 5MB。');
+    }
+    if (!SUBMISSION_IMAGE_TYPES.has(file.type)) {
+      throw new Error('图片仅支持 JPG、PNG、WebP 或 GIF。');
+    }
+
+    totalSize += file.size;
+    if (totalSize > SUBMISSION_UPLOAD_LIMIT) {
+      throw new Error('图片总大小不能超过 12MB。');
+    }
+
+    attachments.push({
+      role,
+      filename: safeFileName(file.name || `${role}-${attachments.length + 1}`),
+      contentType: file.type,
+      size: file.size,
+      content: arrayBufferToBase64(await file.arrayBuffer())
+    });
+  }
+
+  return totalSize;
+}
+
+function isUploadFile(value) {
+  return value
+    && typeof value === 'object'
+    && typeof value.arrayBuffer === 'function'
+    && typeof value.name === 'string'
+    && typeof value.size === 'number';
+}
+
+function safeFileName(name) {
+  const cleaned = String(name || 'upload')
+    .replace(/[^\w.\-()\u4e00-\u9fff ]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return cleaned || 'upload';
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 async function hashVisitor(request, env) {
   const address = request.headers.get('cf-connecting-ip')
     || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
@@ -559,34 +675,7 @@ function cleanComment(value) {
 }
 
 function normalizeSubmission(payload) {
-  const fields = [
-    'entryId',
-    'displayName',
-    'avatar',
-    'description',
-    'location',
-    'birthDate',
-    'deathDate',
-    'submitterName',
-    'submitterContact',
-    'relationship',
-    'contentWarnings',
-    'intro',
-    'life',
-    'death',
-    'remembrance',
-    'alias',
-    'age',
-    'identity',
-    'pronouns',
-    'links',
-    'images',
-    'works',
-    'sources',
-    'sourceNote',
-    'custom'
-  ];
-  return Object.fromEntries(fields.map(field => [field, cleanSubmissionText(payload?.[field])]));
+  return Object.fromEntries(SUBMISSION_TEXT_FIELDS.map(field => [field, cleanSubmissionText(payload?.[field])]));
 }
 
 function cleanSubmissionText(value) {
@@ -597,12 +686,12 @@ function cleanSubmissionText(value) {
     .slice(0, 6000);
 }
 
-function validateSubmission(submission) {
+function validateSubmission(submission, attachments = []) {
   const errors = [];
+  const hasAvatarUpload = attachments.some(item => item.role === 'avatar');
   const required = [
     ['entryId', '请填写条目ID。'],
     ['displayName', '请填写展示名。'],
-    ['avatar', '请填写头像；没有头像请写 none。'],
     ['description', '请填写一句话简介。'],
     ['location', '请填写地区；不公开请写“地区未公开”。'],
     ['birthDate', '请填写出生日期；不公开请写“出生日期未公开”。'],
@@ -612,6 +701,10 @@ function validateSubmission(submission) {
 
   for (const [field, message] of required) {
     if (!submission[field]) errors.push(message);
+  }
+
+  if (!submission.avatar && !hasAvatarUpload) {
+    errors.push('请上传头像图片；没有头像请在头像说明里写 none。');
   }
 
   if (!/^[A-Za-z0-9_ -]{2,80}$/.test(submission.entryId || '')) {
@@ -625,12 +718,17 @@ function validateSubmission(submission) {
   return errors;
 }
 
-function buildSubmissionMarkdown(submission) {
+function buildSubmissionMarkdown(submission, attachments = []) {
   const section = (title, body) => body ? `## ${title}\n\n${body}\n` : '';
+  const hasAvatarUpload = attachments.some(item => item.role === 'avatar');
+  const attachmentLines = attachments.map(file => {
+    const role = file.role === 'avatar' ? '头像' : '图片';
+    return `- ${role}：${file.filename}（${formatBytes(file.size)}，${file.contentType}）`;
+  }).join('\n');
   const meta = [
     ['条目ID', submission.entryId],
     ['展示名', submission.displayName],
-    ['头像', submission.avatar],
+    ['头像', submission.avatar || (hasAvatarUpload ? '见邮件附件' : '')],
     ['一句话简介', submission.description],
     ['地区', submission.location],
     ['出生日期', submission.birthDate],
@@ -656,6 +754,7 @@ ${section('生平与记忆', submission.life)}
 ${section('离世', submission.death)}
 ${section('念想', submission.remembrance)}
 ${section('公开链接', submission.links)}
+${section('上传附件', attachmentLines)}
 ${section('图片', submission.images)}
 ${section('作品', submission.works)}
 ${section('资料来源', submission.sources)}
@@ -667,7 +766,14 @@ ${section('自选附加项', submission.custom)}
 `.trim();
 }
 
-async function sendSubmissionEmail(env, submission, markdown, request) {
+function formatBytes(value) {
+  if (!Number.isFinite(value)) return '未知大小';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function sendSubmissionEmail(env, submission, markdown, request, attachments = []) {
   const from = env.SUBMISSION_FROM_EMAIL || '勿忘我投稿 <onboarding@resend.dev>';
   const to = env.SUBMISSION_TO_EMAIL || SUBMISSION_TO_EMAIL;
   const subjectName = submission.displayName.slice(0, 80);
@@ -684,6 +790,13 @@ async function sendSubmissionEmail(env, submission, markdown, request) {
       { name: 'source', value: 'rip_lgbt_submission' }
     ]
   };
+
+  if (attachments.length) {
+    body.attachments = attachments.map(file => ({
+      filename: file.filename,
+      content: file.content
+    }));
+  }
 
   if (isEmail(submission.submitterContact)) {
     body.reply_to = submission.submitterContact;
@@ -824,7 +937,7 @@ function renderSubmitPage() {
     <p class="lede">请尽量写清楚事实、授权和想留下的话。投稿会整理成 Markdown 发到维护者邮箱，不会立刻公开。</p>
   </section>
 
-  <form class="submission-form" data-submission-form>
+  <form class="submission-form" data-submission-form enctype="multipart/form-data">
     <section class="submission-panel" aria-labelledby="required-title">
       <div class="panel-heading">
         <p class="eyebrow">REQUIRED</p>
@@ -834,7 +947,8 @@ function renderSubmitPage() {
       <div class="field-grid">
         ${renderField('条目ID', 'entryId', 'text', 'example_id', '用于生成网址，例如 /memorial/example_id。建议英文、数字、下划线。')}
         ${renderField('展示名', 'displayName', 'text', 'Akiball', '页面标题。可以是真名、网名、常用 ID 或“无名逝者”。')}
-        ${renderField('头像', 'avatar', 'text', 'profile.jpg / none', '用于列表和详情页顶部；没有头像写 none，授权不确定请说明。')}
+        ${renderField('头像说明', 'avatar', 'text', '已上传头像 / none', '上传头像后可写“已上传头像”；没有头像写 none；授权不确定请说明。')}
+        ${renderFile('头像图片', 'avatarFile', 'image/*', '直接选择头像图片；支持 JPG、PNG、WebP、GIF，单张不超过 5MB。')}
         ${renderField('一句话简介', 'description', 'text', '一个温柔、热爱游戏和做饭的跨性别女孩。', '列表摘要和详情页顶部介绍，建议 20-60 字。')}
         ${renderField('地区', 'location', 'text', '广东深圳 / 地区未公开', '生活、常住、出生或主要被联系到的地区；不确定写“地区未公开”。')}
         ${renderField('出生日期', 'birthDate', 'text', '2007-02-12 / 出生日期未公开', '可写 YYYY-MM-DD、YYYY-MM、YYYY；不公开请写明。')}
@@ -872,7 +986,8 @@ function renderSubmitPage() {
         ${renderField('身份表述', 'identity', 'text', '跨性别女性 / 非二元 / 性别多元', '仅在适合公开且有依据时填写，不要猜测。')}
         ${renderField('代词', 'pronouns', 'text', '她 / 他 / ta / they', 'ta 希望被如何称呼；没有公开信息可不填。')}
         ${renderTextarea('公开链接', 'links', 'twitter: https://...\nblog: https://...', '公开主页、社交账号、博客、作品页；不要提交私人账号。')}
-        ${renderTextarea('图片', 'images', 'profile.jpg：公开头像，可用于页面头像。\nphoto1.jpg：朋友提供，已同意公开。', '列出图片文件、内容、来源和是否允许公开。')}
+        ${renderTextarea('图片说明', 'images', '头像：本人公开头像，允许公开。\n生活照：朋友提供，已同意公开。', '说明每张图的内容、来源、授权边界和希望放在哪里。')}
+        ${renderFile('图片附件', 'imageFiles', 'image/*', '可以多选；正文照片、作品截图等会作为邮件附件发送。', true)}
         ${renderTextarea('作品', 'works', '作品名：链接或说明', '文章、音乐、视频、项目、绘画、游戏、代码等。')}
         ${renderTextarea('资料来源', 'sources', '公开报道、讣告、朋友说明、社交平台公开内容。', '用于维护者核对事实，不一定展示。')}
         ${renderTextarea('资料/授权说明', 'sourceNote', '头像/照片是否允许公开；哪些信息只供核对。', '保护隐私和授权边界。')}
@@ -919,6 +1034,15 @@ function renderTextarea(label, name, placeholder, help) {
     <label class="field">
       <span>${escapeHtml(label)}</span>
       <textarea name="${escapeAttr(name)}" rows="5" placeholder="${escapeAttr(placeholder)}"></textarea>
+      <small>${escapeHtml(help)}</small>
+    </label>`;
+}
+
+function renderFile(label, name, accept, help, multiple = false) {
+  return `
+    <label class="field file-field">
+      <span>${escapeHtml(label)}</span>
+      <input name="${escapeAttr(name)}" type="file" accept="${escapeAttr(accept)}"${multiple ? ' multiple' : ''}>
       <small>${escapeHtml(help)}</small>
     </label>`;
 }
@@ -1745,6 +1869,17 @@ h3 {
   height: auto;
 }
 
+.story-hidden-effect {
+  margin: 0;
+  height: 0;
+  overflow: hidden;
+  font-size: .001px;
+  line-height: 1;
+  opacity: .01;
+  pointer-events: none;
+  user-select: none;
+}
+
 .footnotes {
   margin-top: 2rem;
   padding-top: 1rem;
@@ -2272,6 +2407,23 @@ h3 {
   box-shadow: 0 0 0 3px rgba(91, 206, 250, .16);
 }
 
+.field input[type="file"] {
+  min-height: 3.1rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.field input[type="file"]::file-selector-button {
+  margin-right: .8rem;
+  border: 0;
+  border-radius: 999px;
+  padding: .5rem .85rem;
+  color: #050509;
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--blue), var(--pink));
+  cursor: pointer;
+}
+
 .submission-actions {
   position: sticky;
   bottom: 0;
@@ -2649,34 +2801,6 @@ function baseScripts() {
 
   const status = form.querySelector('[data-submission-status]');
   const submit = form.querySelector('button[type="submit"]');
-  const fields = [
-    'entryId',
-    'displayName',
-    'avatar',
-    'description',
-    'location',
-    'birthDate',
-    'deathDate',
-    'submitterName',
-    'submitterContact',
-    'relationship',
-    'contentWarnings',
-    'intro',
-    'life',
-    'death',
-    'remembrance',
-    'alias',
-    'age',
-    'identity',
-    'pronouns',
-    'links',
-    'images',
-    'works',
-    'sources',
-    'sourceNote',
-    'custom',
-    'website'
-  ];
 
   const setStatus = (message, tone = '') => {
     if (!status) return;
@@ -2686,8 +2810,7 @@ function baseScripts() {
 
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    const data = new FormData(form);
-    const payload = Object.fromEntries(fields.map(field => [field, data.get(field) || '']));
+    const payload = new FormData(form);
 
     setStatus('发送中…');
     submit.disabled = true;
@@ -2695,8 +2818,7 @@ function baseScripts() {
     try {
       const response = await fetch('/api/submissions', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: payload
       });
       const result = await response.json();
 
@@ -2756,8 +2878,8 @@ function preprocessMarkdown(markdown) {
 
   text = text.replace(/<!--[\s\S]*?-->/g, '\n');
   text = text.replace(
-    /<([a-z][a-z0-9:-]*)\b[^>]*style\s*=\s*["'][^"']*(?:font-size\s*:\s*0(?:\.\d+)?px|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi,
-    '\n'
+    /<([a-z][a-z0-9:-]*)\b[^>]*style\s*=\s*["'][^"']*(?:font-size\s*:\s*0(?:\.\d+)?px|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)[^"']*["'][^>]*>([\s\S]*?)<\/\1>/gi,
+    (_, _tag, content) => hiddenHtmlToken(content)
   );
   text = text.replace(/<PhotoScroll\s+photos=\{\[([\s\S]*?)\]\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
   text = text.replace(/<PhotoScroll\s+photos=\{(\[[\s\S]*?\])\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
@@ -2780,6 +2902,10 @@ function galleryToken(markup) {
   });
 
   return photos.length ? `\n\n[[GALLERY:${photos.join('|')}]]\n\n` : '\n';
+}
+
+function hiddenHtmlToken(content) {
+  return `\n\n[[HIDDEN_HTML:${encodeURIComponent(String(content || '').trim())}]]\n\n`;
 }
 
 function extractFootnotes(lines) {
@@ -2847,6 +2973,13 @@ function renderMarkdownLines(lines, personPath) {
     if (gallery) {
       flushParagraph();
       html += renderGallery(gallery[1], personPath);
+      continue;
+    }
+
+    const hidden = trimmed.match(/^\[\[HIDDEN_HTML:(.*)\]\]$/);
+    if (hidden) {
+      flushParagraph();
+      html += `<p class="story-hidden-effect" aria-hidden="true">${renderInline(decodeURIComponent(hidden[1]), personPath)}</p>`;
       continue;
     }
 
