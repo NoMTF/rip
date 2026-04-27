@@ -86,6 +86,20 @@ const SUBMISSION_FILE_LIMIT = 5_000_000;
 const SUBMISSION_ATTACHMENT_LIMIT = 12;
 const SUBMISSION_COOLDOWN_MS = 120_000;
 const SUBMISSION_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const SUBMISSION_CODE_TYPES = new Set([
+  '',
+  'text/plain',
+  'text/markdown',
+  'text/html',
+  'text/css',
+  'text/javascript',
+  'application/javascript',
+  'application/json',
+  'application/xml',
+  'text/xml',
+  'application/octet-stream'
+]);
+const SUBMISSION_CODE_EXTENSIONS = new Set(['.txt', '.md', '.mdx', '.html', '.htm', '.css', '.js', '.json', '.xml']);
 const SUBMISSION_TEXT_FIELDS = [
   'entryId',
   'displayName',
@@ -111,17 +125,19 @@ const SUBMISSION_TEXT_FIELDS = [
   'works',
   'sources',
   'sourceNote',
+  'effects',
   'custom',
   'website'
 ];
 const SUBMISSION_FILE_FIELDS = [
-  ['avatarFile', 'avatar', '头像'],
-  ['introImages', 'intro', '简介'],
-  ['lifeImages', 'life', '生平与记忆'],
-  ['deathImages', 'death', '离世'],
-  ['remembranceImages', 'remembrance', '念想'],
-  ['worksImages', 'works', '作品'],
-  ['customImages', 'custom', '自选附加项']
+  { name: 'avatarFile', role: 'avatar', label: '头像', kind: 'image' },
+  { name: 'introImages', role: 'intro', label: '简介', kind: 'image' },
+  { name: 'lifeImages', role: 'life', label: '生平与记忆', kind: 'image' },
+  { name: 'deathImages', role: 'death', label: '离世', kind: 'image' },
+  { name: 'remembranceImages', role: 'remembrance', label: '念想', kind: 'image' },
+  { name: 'worksImages', role: 'works', label: '作品', kind: 'image' },
+  { name: 'effectFiles', role: 'effects', label: '排版与特殊效果', kind: 'code' },
+  { name: 'customImages', role: 'custom', label: '自选附加项', kind: 'image' }
 ];
 
 export class MemorialEngagement extends DurableObject {
@@ -582,7 +598,7 @@ async function readSubmissionRequest(request) {
 
   const length = Number(request.headers.get('content-length') || 0);
   if (length > SUBMISSION_UPLOAD_LIMIT) {
-    throw new Error('图片总大小不能超过 12MB。');
+    throw new Error('附件总大小不能超过 12MB。');
   }
 
   const form = await request.formData();
@@ -593,43 +609,70 @@ async function readSubmissionRequest(request) {
 
   const attachments = [];
   let totalSize = 0;
-  for (const [fieldName, role, label] of SUBMISSION_FILE_FIELDS) {
-    totalSize = await collectSubmissionFiles(form, fieldName, role, label, attachments, totalSize);
+  for (const field of SUBMISSION_FILE_FIELDS) {
+    totalSize = await collectSubmissionFiles(form, field, attachments, totalSize);
   }
 
   return { payload, attachments };
 }
 
-async function collectSubmissionFiles(form, fieldName, role, label, attachments, totalSize) {
+async function collectSubmissionFiles(form, field, attachments, totalSize) {
+  const { name: fieldName, role, label } = field;
   for (const file of form.getAll(fieldName)) {
     if (!isUploadFile(file) || !file.size) continue;
 
     if (attachments.length >= SUBMISSION_ATTACHMENT_LIMIT) {
-      throw new Error(`图片附件最多 ${SUBMISSION_ATTACHMENT_LIMIT} 个。`);
+      throw new Error(`附件最多 ${SUBMISSION_ATTACHMENT_LIMIT} 个。`);
     }
     if (file.size > SUBMISSION_FILE_LIMIT) {
-      throw new Error('单张图片不能超过 5MB。');
+      throw new Error('单个附件不能超过 5MB。');
     }
-    if (!SUBMISSION_IMAGE_TYPES.has(file.type)) {
-      throw new Error('图片仅支持 JPG、PNG、WebP 或 GIF。');
+    if (!isAllowedSubmissionFile(file, field)) {
+      throw new Error(field.kind === 'code'
+        ? '排版代码附件仅支持 txt、md、mdx、html、css、js、json 或 xml。'
+        : '图片仅支持 JPG、PNG、WebP 或 GIF。');
     }
 
     totalSize += file.size;
     if (totalSize > SUBMISSION_UPLOAD_LIMIT) {
-      throw new Error('图片总大小不能超过 12MB。');
+      throw new Error('附件总大小不能超过 12MB。');
     }
 
     attachments.push({
       role,
       label,
       filename: safeFileName(`${label}-${attachments.length + 1}-${file.name || 'upload'}`),
-      contentType: file.type,
+      contentType: file.type || inferSubmissionContentType(file.name),
       size: file.size,
       content: arrayBufferToBase64(await file.arrayBuffer())
     });
   }
 
   return totalSize;
+}
+
+function isAllowedSubmissionFile(file, field) {
+  if (field.kind === 'image') return SUBMISSION_IMAGE_TYPES.has(file.type);
+  if (field.kind === 'code') {
+    return SUBMISSION_CODE_TYPES.has(file.type) || SUBMISSION_CODE_EXTENSIONS.has(fileExtension(file.name));
+  }
+  return false;
+}
+
+function fileExtension(name) {
+  const match = String(name || '').toLowerCase().match(/\.[a-z0-9]+$/);
+  return match ? match[0] : '';
+}
+
+function inferSubmissionContentType(name) {
+  const ext = fileExtension(name);
+  if (ext === '.md' || ext === '.mdx') return 'text/markdown';
+  if (ext === '.html' || ext === '.htm') return 'text/html';
+  if (ext === '.css') return 'text/css';
+  if (ext === '.js') return 'text/javascript';
+  if (ext === '.json') return 'application/json';
+  if (ext === '.xml') return 'application/xml';
+  return 'text/plain';
 }
 
 function isUploadFile(value) {
@@ -767,6 +810,7 @@ ${section('图片', submission.images)}
 ${section('作品', submission.works)}
 ${section('资料来源', submission.sources)}
 ${section('资料/授权说明', submission.sourceNote)}
+${section('排版与特殊效果', submission.effects)}
 ${section('自选附加项', submission.custom)}
 ---
 
@@ -782,7 +826,7 @@ function formatBytes(value) {
 }
 
 function groupedAttachmentMarkdown(attachments = []) {
-  return SUBMISSION_FILE_FIELDS.map(([, role, label]) => {
+  return SUBMISSION_FILE_FIELDS.map(({ role, label }) => {
     const files = attachments.filter(file => file.role === role);
     if (!files.length) return '';
     return `### ${label}\n${files.map(file => `- ${file.filename}（${formatBytes(file.size)}，${file.contentType}）`).join('\n')}`;
@@ -1010,6 +1054,18 @@ function renderSubmitPage() {
         ${renderFile('作品图片', 'worksImages', 'image/*', '插在作品附近的图片，例如作品截图、绘画、项目封面。', true)}
         ${renderTextarea('资料来源', 'sources', '公开报道、讣告、朋友说明、社交平台公开内容。', '用于维护者核对事实，不一定展示。')}
         ${renderTextarea('资料/授权说明', 'sourceNote', '头像/照片是否允许公开；哪些信息只供核对。', '保护隐私和授权边界。')}
+      </div>
+    </section>
+
+    <section class="submission-panel" aria-labelledby="effects-title">
+      <div class="panel-heading">
+        <p class="eyebrow">FORMAT</p>
+        <h2 id="effects-title">排版与特殊效果</h2>
+        <p>如果你想要特定字体、文字颜色、居中、折叠段落、注音、图片排布、渐变字或其他效果，可以直接写需求，也可以贴 HTML/MDX/CSS 片段。</p>
+      </div>
+      <div class="field-grid single">
+        ${renderTextarea('字体、格式、颜色或特效说明', 'effects', '例：标题居中；引用署名右对齐；“Lost” 做红粉渐变字；某段做折叠 details；日文旁边加 ruby 注音。\n\n也可以直接贴 HTML/MDX，例如：\n<h3 align=\"center\">谨以此文纪念...</h3>\n<p style=\"text-align: end;\">——署名</p>', '不会写代码也没关系，描述你想看到的效果即可；会写的话可以贴 HTML/MDX/CSS，维护者会按站点安全规则整理。')}
+        ${renderFile('排版/特效代码附件', 'effectFiles', '.txt,.md,.mdx,.html,.htm,.css,.js,.json,.xml,text/plain,text/markdown,text/html,text/css,application/json', '可上传文字、Markdown、MDX、HTML、CSS、JS、JSON 或 XML 文件；附件会标记为“排版与特殊效果”。', true)}
       </div>
     </section>
 
