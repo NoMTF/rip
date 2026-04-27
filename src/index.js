@@ -11,6 +11,9 @@ const SITE = {
   dataHost: 'https://data.one-among.us'
 };
 
+const SUBMISSION_TO_EMAIL = 'wangyanluo233@gmail.com';
+const RESEND_EMAILS_ENDPOINT = 'https://api.resend.com/emails';
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -24,6 +27,10 @@ export default {
           count: people.length,
           people
         });
+      }
+
+      if (path === '/api/submissions') {
+        return handleSubmission(request, env);
       }
 
       const apiOne = path.match(/^\/api\/memorials\/([^/]+)$/);
@@ -58,6 +65,10 @@ export default {
         return html(renderHomePage(people));
       }
 
+      if (path === '/submit') {
+        return html(renderSubmitPage());
+      }
+
       return notFound();
     } catch (error) {
       return html(renderErrorPage(error), 502);
@@ -69,6 +80,8 @@ const COMMENT_LIMIT = 1000;
 const AUTHOR_LIMIT = 40;
 const COMMENT_COOLDOWN_MS = 30_000;
 const FLOWER_COOLDOWN_MS = 86_400_000;
+const SUBMISSION_BODY_LIMIT = 30_000;
+const SUBMISSION_COOLDOWN_MS = 120_000;
 
 export class MemorialEngagement extends DurableObject {
   constructor(ctx, env) {
@@ -102,6 +115,14 @@ export class MemorialEngagement extends DurableObject {
         );
         CREATE INDEX IF NOT EXISTS flower_events_ip_idx
           ON flower_events(ip_hash, created_at);
+
+        CREATE TABLE IF NOT EXISTS submission_events (
+          id TEXT PRIMARY KEY,
+          ip_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS submission_events_ip_idx
+          ON submission_events(ip_hash, created_at);
       `);
     });
   }
@@ -193,6 +214,28 @@ export class MemorialEngagement extends DurableObject {
   getFlowerCount() {
     const row = this.sql.exec("SELECT total FROM flowers WHERE id = 'main'").toArray()[0];
     return Number(row?.total || 0);
+  }
+
+  recordSubmission(payload) {
+    const ipHash = String(payload?.ipHash || 'unknown');
+    const latest = this.sql.exec(`
+      SELECT created_at AS createdAt
+      FROM submission_events
+      WHERE ip_hash = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, ipHash).toArray()[0];
+
+    if (latest && Date.now() - Date.parse(latest.createdAt) < SUBMISSION_COOLDOWN_MS) {
+      return { ok: false, error: 'too_fast', message: '提交太快了，请稍后再试。' };
+    }
+
+    this.sql.exec(`
+      INSERT INTO submission_events (id, ip_hash, created_at)
+      VALUES (?, ?, ?)
+    `, crypto.randomUUID(), ipHash, new Date().toISOString());
+
+    return { ok: true };
   }
 }
 
@@ -305,6 +348,54 @@ async function handleEngagement(request, env, inputId, action) {
   }
 
   return dynamicJson({ error: 'not_found' }, 404);
+}
+
+async function handleSubmission(request, env) {
+  if (request.method !== 'POST') return methodNotAllowed('POST');
+
+  let payload;
+  try {
+    payload = await readJsonBody(request, SUBMISSION_BODY_LIMIT);
+  } catch (error) {
+    return dynamicJson({ ok: false, error: 'bad_request', message: error.message }, 400);
+  }
+
+  if (payload.website) {
+    return dynamicJson({ ok: true, ignored: true }, 202);
+  }
+
+  const submission = normalizeSubmission(payload);
+  const errors = validateSubmission(submission);
+  if (errors.length) {
+    return dynamicJson({ ok: false, error: 'validation_error', message: errors[0], errors }, 400);
+  }
+
+  if (!env?.RESEND_API_KEY) {
+    return dynamicJson({
+      ok: false,
+      error: 'email_not_configured',
+      message: '投稿邮件暂未配置，请稍后再试。'
+    }, 503);
+  }
+
+  const ipHash = await hashVisitor(request, env);
+  if (env?.ENGAGEMENT) {
+    const throttle = await env.ENGAGEMENT.getByName('submission:global').recordSubmission({ ipHash });
+    if (!throttle.ok) return dynamicJson(throttle, 429);
+  }
+
+  const markdown = buildSubmissionMarkdown(submission);
+  const email = await sendSubmissionEmail(env, submission, markdown, request);
+  if (!email.ok) {
+    return dynamicJson({
+      ok: false,
+      error: 'email_failed',
+      message: '投稿邮件发送失败，请稍后再试。',
+      detail: email.message
+    }, 502);
+  }
+
+  return dynamicJson({ ok: true, id: email.id, message: '投稿已发送。' }, 201);
 }
 
 function normalizePerson(raw) {
@@ -421,14 +512,14 @@ function methodNotAllowed(allow) {
   });
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, maxLength = 4096) {
   const length = Number(request.headers.get('content-length') || 0);
-  if (length > 4096) {
+  if (length > maxLength) {
     throw new Error('Request body is too large');
   }
 
   const text = await request.text();
-  if (text.length > 4096) {
+  if (text.length > maxLength) {
     throw new Error('Request body is too large');
   }
 
@@ -467,6 +558,166 @@ function cleanComment(value) {
     .slice(0, COMMENT_LIMIT);
 }
 
+function normalizeSubmission(payload) {
+  const fields = [
+    'entryId',
+    'displayName',
+    'avatar',
+    'description',
+    'location',
+    'birthDate',
+    'deathDate',
+    'submitterName',
+    'submitterContact',
+    'relationship',
+    'contentWarnings',
+    'intro',
+    'life',
+    'death',
+    'remembrance',
+    'alias',
+    'age',
+    'identity',
+    'pronouns',
+    'links',
+    'images',
+    'works',
+    'sources',
+    'sourceNote',
+    'custom'
+  ];
+  return Object.fromEntries(fields.map(field => [field, cleanSubmissionText(payload?.[field])]));
+}
+
+function cleanSubmissionText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim()
+    .slice(0, 6000);
+}
+
+function validateSubmission(submission) {
+  const errors = [];
+  const required = [
+    ['entryId', '请填写条目ID。'],
+    ['displayName', '请填写展示名。'],
+    ['avatar', '请填写头像；没有头像请写 none。'],
+    ['description', '请填写一句话简介。'],
+    ['location', '请填写地区；不公开请写“地区未公开”。'],
+    ['birthDate', '请填写出生日期；不公开请写“出生日期未公开”。'],
+    ['deathDate', '请填写逝世日期。'],
+    ['submitterContact', '请填写投稿人联系方式，便于维护者核对。']
+  ];
+
+  for (const [field, message] of required) {
+    if (!submission[field]) errors.push(message);
+  }
+
+  if (!/^[A-Za-z0-9_ -]{2,80}$/.test(submission.entryId || '')) {
+    errors.push('条目ID 建议只使用英文、数字、下划线、短横线或空格，长度 2-80。');
+  }
+
+  if (!submission.intro && !submission.life && !submission.death && !submission.remembrance) {
+    errors.push('正文至少填写“简介 / 生平与记忆 / 离世 / 念想”中的一项。');
+  }
+
+  return errors;
+}
+
+function buildSubmissionMarkdown(submission) {
+  const section = (title, body) => body ? `## ${title}\n\n${body}\n` : '';
+  const meta = [
+    ['条目ID', submission.entryId],
+    ['展示名', submission.displayName],
+    ['头像', submission.avatar],
+    ['一句话简介', submission.description],
+    ['地区', submission.location],
+    ['出生日期', submission.birthDate],
+    ['逝世日期', submission.deathDate],
+    ['昵称', submission.alias],
+    ['年龄', submission.age],
+    ['身份表述', submission.identity],
+    ['代词', submission.pronouns],
+    ['内容提醒', submission.contentWarnings],
+    ['投稿人称呼', submission.submitterName],
+    ['投稿人联系方式', submission.submitterContact],
+    ['与逝者关系', submission.relationship]
+  ].filter(([, value]) => value);
+
+  return `# 勿忘我投稿：${submission.displayName}
+
+## 基础信息
+
+${meta.map(([key, value]) => `- ${key}：${value}`).join('\n')}
+
+${section('简介', submission.intro)}
+${section('生平与记忆', submission.life)}
+${section('离世', submission.death)}
+${section('念想', submission.remembrance)}
+${section('公开链接', submission.links)}
+${section('图片', submission.images)}
+${section('作品', submission.works)}
+${section('资料来源', submission.sources)}
+${section('资料/授权说明', submission.sourceNote)}
+${section('自选附加项', submission.custom)}
+---
+
+提交时间：${new Date().toISOString()}
+`.trim();
+}
+
+async function sendSubmissionEmail(env, submission, markdown, request) {
+  const from = env.SUBMISSION_FROM_EMAIL || '勿忘我投稿 <onboarding@resend.dev>';
+  const to = env.SUBMISSION_TO_EMAIL || SUBMISSION_TO_EMAIL;
+  const subjectName = submission.displayName.slice(0, 80);
+  const body = {
+    from,
+    to: [to],
+    subject: `新的勿忘我投稿：${subjectName}`,
+    text: markdown,
+    html: `<div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#111">
+      <h1 style="font-size:22px;margin:0 0 16px">新的勿忘我投稿：${escapeHtml(subjectName)}</h1>
+      <pre style="white-space:pre-wrap;background:#f6f7f9;border:1px solid #e5e7eb;border-radius:8px;padding:16px;font:14px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace">${escapeHtml(markdown)}</pre>
+    </div>`,
+    tags: [
+      { name: 'source', value: 'rip_lgbt_submission' }
+    ]
+  };
+
+  if (isEmail(submission.submitterContact)) {
+    body.reply_to = submission.submitterContact;
+  }
+
+  const idempotencyKey = await hashText(`${request.headers.get('cf-ray') || crypto.randomUUID()}:${submission.entryId}:${Date.now()}`);
+  const response = await fetch(RESEND_EMAILS_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${env.RESEND_API_KEY}`,
+      'content-type': 'application/json',
+      'idempotency-key': idempotencyKey
+    },
+    body: JSON.stringify(body)
+  });
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    return { ok: false, message: result.message || result.error || `Resend returned ${response.status}` };
+  }
+
+  return { ok: true, id: result.id };
+}
+
+async function hashText(value) {
+  const data = new TextEncoder().encode(String(value));
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function isEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
 function notFound() {
   return html(renderNotFound(), 404);
 }
@@ -489,6 +740,9 @@ function renderHomePage(people) {
       <small>${escapeHtml(SITE.subtitle)}</small>
     </span>
   </a>
+  <nav class="header-links" aria-label="页面导航">
+    <a href="/submit">投稿</a>
+  </nav>
 </header>
 
 <main>
@@ -542,6 +796,131 @@ function renderHomePage(people) {
 ${renderFooter()}
 `
   });
+}
+
+function renderSubmitPage() {
+  return shell({
+    title: `投稿 · ${SITE.title}`,
+    description: '向勿忘我提交新的纪念条目。',
+    content: `
+<header class="site-header">
+  <a class="brand" href="/" aria-label="返回首页">
+    <span class="brand-mark" aria-hidden="true">勿</span>
+    <span>
+      <strong>${escapeHtml(SITE.title)}</strong>
+      <small>${escapeHtml(SITE.subtitle)}</small>
+    </span>
+  </a>
+  <nav class="header-links" aria-label="页面导航">
+    <a href="/">索引</a>
+    <a href="/submit">投稿</a>
+  </nav>
+</header>
+
+<main class="submit-page">
+  <section class="submit-hero" aria-labelledby="submit-title">
+    <p class="eyebrow">SUBMISSION</p>
+    <h1 id="submit-title">提交纪念条目</h1>
+    <p class="lede">请尽量写清楚事实、授权和想留下的话。投稿会整理成 Markdown 发到维护者邮箱，不会立刻公开。</p>
+  </section>
+
+  <form class="submission-form" data-submission-form>
+    <section class="submission-panel" aria-labelledby="required-title">
+      <div class="panel-heading">
+        <p class="eyebrow">REQUIRED</p>
+        <h2 id="required-title">必填</h2>
+        <p>缺失会严重影响页面排版和基础识别；不公开的信息请直接写“未公开”，不要留空。</p>
+      </div>
+      <div class="field-grid">
+        ${renderField('条目ID', 'entryId', 'text', 'example_id', '用于生成网址，例如 /memorial/example_id。建议英文、数字、下划线。')}
+        ${renderField('展示名', 'displayName', 'text', 'Akiball', '页面标题。可以是真名、网名、常用 ID 或“无名逝者”。')}
+        ${renderField('头像', 'avatar', 'text', 'profile.jpg / none', '用于列表和详情页顶部；没有头像写 none，授权不确定请说明。')}
+        ${renderField('一句话简介', 'description', 'text', '一个温柔、热爱游戏和做饭的跨性别女孩。', '列表摘要和详情页顶部介绍，建议 20-60 字。')}
+        ${renderField('地区', 'location', 'text', '广东深圳 / 地区未公开', '生活、常住、出生或主要被联系到的地区；不确定写“地区未公开”。')}
+        ${renderField('出生日期', 'birthDate', 'text', '2007-02-12 / 出生日期未公开', '可写 YYYY-MM-DD、YYYY-MM、YYYY；不公开请写明。')}
+        ${renderField('逝世日期', 'deathDate', 'text', '2025-06-19 / unknown', '用于排序和展示；不确定可以写 YYYY、YYYY-MM 或 unknown。')}
+        ${renderField('投稿人联系方式', 'submitterContact', 'text', '邮箱 / Telegram / 其他联系方式', '只发给维护者核对，不公开。')}
+        ${renderField('投稿人称呼', 'submitterName', 'text', '你的称呼', '只发给维护者核对，不公开。')}
+        ${renderField('与逝者关系', 'relationship', 'text', '朋友 / 亲属 / 伴侣 / 社群成员', '帮助维护者判断资料来源，不公开。')}
+      </div>
+    </section>
+
+    <section class="submission-panel" aria-labelledby="conditional-title">
+      <div class="panel-heading">
+        <p class="eyebrow">CONTENT</p>
+        <h2 id="conditional-title">选择性必填</h2>
+        <p>正文至少填写一项。正文越完整，页面越不像空档案；推荐至少写“简介 + 念想”。</p>
+      </div>
+      <div class="field-grid single">
+        ${renderTextarea('内容提醒', 'contentWarnings', '自杀、精神健康、家暴、性暴力、校园暴力、药物、仇恨犯罪、死亡细节；没有就写“无明显内容提醒”。', '给读者的创伤内容提示。')}
+        ${renderTextarea('简介', 'intro', '写 ta 是谁：常用名字、性格、爱好、给朋友留下的印象。', '这是读者进入页面后最需要知道的基础介绍。')}
+        ${renderTextarea('生平与记忆', 'life', '写 ta 怎样活过：爱好、作品、关系、社群经历、朋友记得的小事。', '不是简历，而是具体的人生片段。')}
+        ${renderTextarea('离世', 'death', '写公开且适合发布的离世信息；不写未确认传闻和过度死亡细节。', '只保留必要事实，避免让死亡细节覆盖 ta 的一生。')}
+        ${renderTextarea('念想', 'remembrance', '写活着的人想留给 ta 的话：晚安、谢谢、对不起、我记得你、愿你不再痛苦。', '“念想”就是纪念、道别、祝福、感谢、遗憾、想念；不是资料介绍。')}
+      </div>
+    </section>
+
+    <section class="submission-panel" aria-labelledby="optional-title">
+      <div class="panel-heading">
+        <p class="eyebrow">OPTIONAL</p>
+        <h2 id="optional-title">选填</h2>
+        <p>这些内容可以丰富页面效果；没有就空着。</p>
+      </div>
+      <div class="field-grid">
+        ${renderField('昵称', 'alias', 'text', 'Aki、小盐、折耳猫', 'ta 的昵称、常用 ID、朋友常叫的名字。')}
+        ${renderField('年龄', 'age', 'text', '18', '逝世时年龄，不确定可以不填。')}
+        ${renderField('身份表述', 'identity', 'text', '跨性别女性 / 非二元 / 性别多元', '仅在适合公开且有依据时填写，不要猜测。')}
+        ${renderField('代词', 'pronouns', 'text', '她 / 他 / ta / they', 'ta 希望被如何称呼；没有公开信息可不填。')}
+        ${renderTextarea('公开链接', 'links', 'twitter: https://...\nblog: https://...', '公开主页、社交账号、博客、作品页；不要提交私人账号。')}
+        ${renderTextarea('图片', 'images', 'profile.jpg：公开头像，可用于页面头像。\nphoto1.jpg：朋友提供，已同意公开。', '列出图片文件、内容、来源和是否允许公开。')}
+        ${renderTextarea('作品', 'works', '作品名：链接或说明', '文章、音乐、视频、项目、绘画、游戏、代码等。')}
+        ${renderTextarea('资料来源', 'sources', '公开报道、讣告、朋友说明、社交平台公开内容。', '用于维护者核对事实，不一定展示。')}
+        ${renderTextarea('资料/授权说明', 'sourceNote', '头像/照片是否允许公开；哪些信息只供核对。', '保护隐私和授权边界。')}
+      </div>
+    </section>
+
+    <section class="submission-panel" aria-labelledby="custom-title">
+      <div class="panel-heading">
+        <p class="eyebrow">CUSTOM</p>
+        <h2 id="custom-title">自选</h2>
+        <p>投稿人自创附加项。不保证单独排版，但会作为正文素材发给维护者。</p>
+      </div>
+      ${renderTextarea('自选附加项', 'custom', '喜欢的事物：\n喜欢的歌：\n重要日期：\n纪念色：\n想保留的一句话：', '任何你觉得重要、但上面没覆盖的内容。')}
+    </section>
+
+    <label class="hp-field" aria-hidden="true">
+      <span>Website</span>
+      <input name="website" tabindex="-1" autocomplete="off">
+    </label>
+
+    <div class="submission-actions">
+      <button class="button primary" type="submit">发送投稿</button>
+      <p class="comment-status" data-submission-status role="status"></p>
+    </div>
+  </form>
+</main>
+
+${renderFooter()}
+`
+  });
+}
+
+function renderField(label, name, type, placeholder, help) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input name="${escapeAttr(name)}" type="${escapeAttr(type)}" placeholder="${escapeAttr(placeholder)}">
+      <small>${escapeHtml(help)}</small>
+    </label>`;
+}
+
+function renderTextarea(label, name, placeholder, help) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <textarea name="${escapeAttr(name)}" rows="5" placeholder="${escapeAttr(placeholder)}"></textarea>
+      <small>${escapeHtml(help)}</small>
+    </label>`;
 }
 
 function renderPersonCard(person) {
@@ -1791,6 +2170,116 @@ h3 {
   line-height: 1.7;
 }
 
+.submit-page {
+  max-width: 1080px;
+  padding: clamp(3rem, 7vw, 5rem) 0 5rem;
+}
+
+.submit-hero {
+  max-width: 820px;
+  margin-bottom: 2rem;
+  animation: rise .72s cubic-bezier(.2, .78, .2, 1) both;
+}
+
+.submit-hero h1 {
+  font-size: clamp(3.2rem, 10vw, 6.8rem);
+  line-height: .96;
+}
+
+.submission-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.submission-panel {
+  padding: clamp(1.1rem, 3vw, 1.6rem);
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) + 6px);
+  background:
+    linear-gradient(135deg, rgba(91, 206, 250, .08), transparent 28%),
+    linear-gradient(315deg, rgba(245, 169, 184, .09), transparent 32%),
+    rgba(255, 255, 255, .055);
+  box-shadow: var(--shadow);
+  animation: rise .72s cubic-bezier(.2, .78, .2, 1) both;
+}
+
+.panel-heading {
+  max-width: 760px;
+  margin-bottom: 1rem;
+}
+
+.panel-heading h2 {
+  margin-bottom: .45rem;
+  font-size: clamp(1.65rem, 4vw, 2.4rem);
+}
+
+.panel-heading p:last-child {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .9rem;
+}
+
+.field-grid.single {
+  grid-template-columns: 1fr;
+}
+
+.field {
+  display: grid;
+  gap: .42rem;
+}
+
+.field span {
+  color: var(--ink);
+  font-weight: 760;
+}
+
+.field small {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.field input,
+.field textarea {
+  width: 100%;
+  min-height: 2.8rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+  background: rgba(255, 255, 255, .07);
+  outline: none;
+}
+
+.field textarea {
+  min-height: 8.6rem;
+  resize: vertical;
+  line-height: 1.7;
+}
+
+.field input:focus,
+.field textarea:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(91, 206, 250, .16);
+}
+
+.submission-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .9rem 0;
+  background: linear-gradient(180deg, transparent, rgba(5, 5, 9, .92) 28%);
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -1901,6 +2390,10 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+
   .engagement-head {
     align-items: flex-start;
   }
@@ -1944,6 +2437,7 @@ h3 {
 
   .engagement-head,
   .comment-actions,
+  .submission-actions,
   .profile-actions {
     display: grid;
   }
@@ -2136,6 +2630,78 @@ function baseScripts() {
   }
 
   load();
+})();
+
+(() => {
+  const form = document.querySelector('[data-submission-form]');
+  if (!form) return;
+
+  const status = form.querySelector('[data-submission-status]');
+  const submit = form.querySelector('button[type="submit"]');
+  const fields = [
+    'entryId',
+    'displayName',
+    'avatar',
+    'description',
+    'location',
+    'birthDate',
+    'deathDate',
+    'submitterName',
+    'submitterContact',
+    'relationship',
+    'contentWarnings',
+    'intro',
+    'life',
+    'death',
+    'remembrance',
+    'alias',
+    'age',
+    'identity',
+    'pronouns',
+    'links',
+    'images',
+    'works',
+    'sources',
+    'sourceNote',
+    'custom',
+    'website'
+  ];
+
+  const setStatus = (message, tone = '') => {
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.tone = tone;
+  };
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const payload = Object.fromEntries(fields.map(field => [field, data.get(field) || '']));
+
+    setStatus('发送中…');
+    submit.disabled = true;
+
+    try {
+      const response = await fetch('/api/submissions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+
+      if (!response.ok || !result.ok) {
+        setStatus(result.message || '投稿没有发送成功。', 'error');
+        return;
+      }
+
+      form.reset();
+      setStatus('已发送到维护者邮箱。', 'ok');
+    } catch {
+      setStatus('投稿没有发送成功。', 'error');
+    } finally {
+      submit.disabled = false;
+    }
+  });
 })();
 `;
 }

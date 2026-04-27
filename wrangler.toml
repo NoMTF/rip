@@ -11,6 +11,8 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 SITE_TITLE = "勿忘我"
 SITE_SUBTITLE = "rip.lgbt"
+SUBMISSION_TO_EMAIL = "wangyanluo233@gmail.com"
+SUBMISSION_FROM_EMAIL = "勿忘我投稿 <onboarding@resend.dev>"
 
 [[durable_objects.bindings]]
 name = "ENGAGEMENT"
