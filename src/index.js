@@ -83,7 +83,7 @@ const FLOWER_COOLDOWN_MS = 86_400_000;
 const SUBMISSION_BODY_LIMIT = 30_000;
 const SUBMISSION_UPLOAD_LIMIT = 12_000_000;
 const SUBMISSION_FILE_LIMIT = 5_000_000;
-const SUBMISSION_ATTACHMENT_LIMIT = 6;
+const SUBMISSION_ATTACHMENT_LIMIT = 12;
 const SUBMISSION_COOLDOWN_MS = 120_000;
 const SUBMISSION_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const SUBMISSION_TEXT_FIELDS = [
@@ -113,6 +113,15 @@ const SUBMISSION_TEXT_FIELDS = [
   'sourceNote',
   'custom',
   'website'
+];
+const SUBMISSION_FILE_FIELDS = [
+  ['avatarFile', 'avatar', '头像'],
+  ['introImages', 'intro', '简介'],
+  ['lifeImages', 'life', '生平与记忆'],
+  ['deathImages', 'death', '离世'],
+  ['remembranceImages', 'remembrance', '念想'],
+  ['worksImages', 'works', '作品'],
+  ['customImages', 'custom', '自选附加项']
 ];
 
 export class MemorialEngagement extends DurableObject {
@@ -584,13 +593,14 @@ async function readSubmissionRequest(request) {
 
   const attachments = [];
   let totalSize = 0;
-  totalSize = await collectSubmissionFiles(form, 'avatarFile', 'avatar', attachments, totalSize);
-  totalSize = await collectSubmissionFiles(form, 'imageFiles', 'image', attachments, totalSize);
+  for (const [fieldName, role, label] of SUBMISSION_FILE_FIELDS) {
+    totalSize = await collectSubmissionFiles(form, fieldName, role, label, attachments, totalSize);
+  }
 
   return { payload, attachments };
 }
 
-async function collectSubmissionFiles(form, fieldName, role, attachments, totalSize) {
+async function collectSubmissionFiles(form, fieldName, role, label, attachments, totalSize) {
   for (const file of form.getAll(fieldName)) {
     if (!isUploadFile(file) || !file.size) continue;
 
@@ -611,7 +621,8 @@ async function collectSubmissionFiles(form, fieldName, role, attachments, totalS
 
     attachments.push({
       role,
-      filename: safeFileName(file.name || `${role}-${attachments.length + 1}`),
+      label,
+      filename: safeFileName(`${label}-${attachments.length + 1}-${file.name || 'upload'}`),
       contentType: file.type,
       size: file.size,
       content: arrayBufferToBase64(await file.arrayBuffer())
@@ -721,10 +732,7 @@ function validateSubmission(submission, attachments = []) {
 function buildSubmissionMarkdown(submission, attachments = []) {
   const section = (title, body) => body ? `## ${title}\n\n${body}\n` : '';
   const hasAvatarUpload = attachments.some(item => item.role === 'avatar');
-  const attachmentLines = attachments.map(file => {
-    const role = file.role === 'avatar' ? '头像' : '图片';
-    return `- ${role}：${file.filename}（${formatBytes(file.size)}，${file.contentType}）`;
-  }).join('\n');
+  const attachmentLines = groupedAttachmentMarkdown(attachments);
   const meta = [
     ['条目ID', submission.entryId],
     ['展示名', submission.displayName],
@@ -771,6 +779,14 @@ function formatBytes(value) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function groupedAttachmentMarkdown(attachments = []) {
+  return SUBMISSION_FILE_FIELDS.map(([, role, label]) => {
+    const files = attachments.filter(file => file.role === role);
+    if (!files.length) return '';
+    return `### ${label}\n${files.map(file => `- ${file.filename}（${formatBytes(file.size)}，${file.contentType}）`).join('\n')}`;
+  }).filter(Boolean).join('\n\n');
 }
 
 async function sendSubmissionEmail(env, submission, markdown, request, attachments = []) {
@@ -948,7 +964,7 @@ function renderSubmitPage() {
         ${renderField('条目ID', 'entryId', 'text', 'example_id', '用于生成网址，例如 /memorial/example_id。建议英文、数字、下划线。')}
         ${renderField('展示名', 'displayName', 'text', 'Akiball', '页面标题。可以是真名、网名、常用 ID 或“无名逝者”。')}
         ${renderField('头像说明', 'avatar', 'text', '已上传头像 / none', '上传头像后可写“已上传头像”；没有头像写 none；授权不确定请说明。')}
-        ${renderFile('头像图片', 'avatarFile', 'image/*', '直接选择头像图片；支持 JPG、PNG、WebP、GIF，单张不超过 5MB。')}
+        ${renderFile('头像图片', 'avatarFile', 'image/*', '直接选择头像图片；支持 JPG、PNG、WebP、GIF，单张不超过 5MB。附件会标记为“头像”。')}
         ${renderField('一句话简介', 'description', 'text', '一个温柔、热爱游戏和做饭的跨性别女孩。', '列表摘要和详情页顶部介绍，建议 20-60 字。')}
         ${renderField('地区', 'location', 'text', '广东深圳 / 地区未公开', '生活、常住、出生或主要被联系到的地区；不确定写“地区未公开”。')}
         ${renderField('出生日期', 'birthDate', 'text', '2007-02-12 / 出生日期未公开', '可写 YYYY-MM-DD、YYYY-MM、YYYY；不公开请写明。')}
@@ -968,9 +984,13 @@ function renderSubmitPage() {
       <div class="field-grid single">
         ${renderTextarea('内容提醒', 'contentWarnings', '自杀、精神健康、家暴、性暴力、校园暴力、药物、仇恨犯罪、死亡细节；没有就写“无明显内容提醒”。', '给读者的创伤内容提示。')}
         ${renderTextarea('简介', 'intro', '写 ta 是谁：常用名字、性格、爱好、给朋友留下的印象。', '这是读者进入页面后最需要知道的基础介绍。')}
+        ${renderFile('简介图片', 'introImages', 'image/*', '插在简介附近的图片。请在简介正文里写清楚图片希望出现的位置和说明。', true)}
         ${renderTextarea('生平与记忆', 'life', '写 ta 怎样活过：爱好、作品、关系、社群经历、朋友记得的小事。', '不是简历，而是具体的人生片段。')}
+        ${renderFile('生平与记忆图片', 'lifeImages', 'image/*', '插在生平与记忆附近的图片，例如生活照、聊天截图、活动照片等。', true)}
         ${renderTextarea('离世', 'death', '写公开且适合发布的离世信息；不写未确认传闻和过度死亡细节。', '只保留必要事实，避免让死亡细节覆盖 ta 的一生。')}
+        ${renderFile('离世图片', 'deathImages', 'image/*', '只上传适合公开且必要的图片，例如公开讣告截图；不建议上传刺激性的死亡细节图片。', true)}
         ${renderTextarea('念想', 'remembrance', '写活着的人想留给 ta 的话：晚安、谢谢、对不起、我记得你、愿你不再痛苦。', '“念想”就是纪念、道别、祝福、感谢、遗憾、想念；不是资料介绍。')}
+        ${renderFile('念想图片', 'remembranceImages', 'image/*', '插在念想附近的图片，例如朋友想留下的照片、手写字、纪念图。', true)}
       </div>
     </section>
 
@@ -986,9 +1006,8 @@ function renderSubmitPage() {
         ${renderField('身份表述', 'identity', 'text', '跨性别女性 / 非二元 / 性别多元', '仅在适合公开且有依据时填写，不要猜测。')}
         ${renderField('代词', 'pronouns', 'text', '她 / 他 / ta / they', 'ta 希望被如何称呼；没有公开信息可不填。')}
         ${renderTextarea('公开链接', 'links', 'twitter: https://...\nblog: https://...', '公开主页、社交账号、博客、作品页；不要提交私人账号。')}
-        ${renderTextarea('图片说明', 'images', '头像：本人公开头像，允许公开。\n生活照：朋友提供，已同意公开。', '说明每张图的内容、来源、授权边界和希望放在哪里。')}
-        ${renderFile('图片附件', 'imageFiles', 'image/*', '可以多选；正文照片、作品截图等会作为邮件附件发送。', true)}
         ${renderTextarea('作品', 'works', '作品名：链接或说明', '文章、音乐、视频、项目、绘画、游戏、代码等。')}
+        ${renderFile('作品图片', 'worksImages', 'image/*', '插在作品附近的图片，例如作品截图、绘画、项目封面。', true)}
         ${renderTextarea('资料来源', 'sources', '公开报道、讣告、朋友说明、社交平台公开内容。', '用于维护者核对事实，不一定展示。')}
         ${renderTextarea('资料/授权说明', 'sourceNote', '头像/照片是否允许公开；哪些信息只供核对。', '保护隐私和授权边界。')}
       </div>
@@ -1001,6 +1020,7 @@ function renderSubmitPage() {
         <p>投稿人自创附加项。不保证单独排版，但会作为正文素材发给维护者。</p>
       </div>
       ${renderTextarea('自选附加项', 'custom', '喜欢的事物：\n喜欢的歌：\n重要日期：\n纪念色：\n想保留的一句话：', '任何你觉得重要、但上面没覆盖的内容。')}
+      ${renderFile('自选附加项图片', 'customImages', 'image/*', '给自创栏目配的图片；会标记为“自选附加项”。', true)}
     </section>
 
     <label class="hp-field" aria-hidden="true">
