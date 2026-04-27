@@ -1348,11 +1348,20 @@ ${content}
 
 function renderFooter() {
   return `
-<footer class="site-footer">
-  <p><strong>${escapeHtml(SITE.title)}</strong> 是 ${escapeHtml(SITE.subtitle)} 的纪念索引实验。</p>
-  <p class="footer-actions">
-    <a class="button primary" href="/submit">提交纪念条目</a>
-  </p>
+<footer id="site-footer" class="site-footer">
+  <div class="footer-copy">
+    <p><strong>${escapeHtml(SITE.title)}</strong> 是 ${escapeHtml(SITE.subtitle)} 的纪念索引实验。</p>
+    <p class="footer-actions">
+      <a class="button primary" href="/submit">提交纪念条目</a>
+    </p>
+  </div>
+  <div class="footer-sprout" aria-hidden="true">
+    <span class="sprout-soil"></span>
+    <span class="sprout-stem"></span>
+    <span class="sprout-leaf sprout-leaf-left"></span>
+    <span class="sprout-leaf sprout-leaf-right"></span>
+    <span class="sprout-dew"></span>
+  </div>
 </footer>`;
 }
 
@@ -1371,6 +1380,9 @@ function baseStyles() {
   --petal-dark: #f5a9b8;
   --pink: #f5a9b8;
   --blue: #5bcefa;
+  --leaf: #87d98a;
+  --leaf-dark: #306e45;
+  --soil: #6c4b37;
   --rose: #f5a9b8;
   --card: rgba(11, 12, 20, .72);
   --shadow: 0 28px 90px rgba(0, 0, 0, .36);
@@ -2715,6 +2727,26 @@ h3 {
   }
 }
 
+@keyframes sproutBreathe {
+  0%, 100% {
+    transform: translateX(-50%) rotate(-1deg) scaleY(1);
+  }
+  50% {
+    transform: translateX(-50%) rotate(1deg) scaleY(1.035);
+  }
+}
+
+@keyframes dewPulse {
+  0%, 100% {
+    opacity: .55;
+    transform: translateY(0) scale(.92);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-.12rem) scale(1);
+  }
+}
+
 .not-found {
   min-height: 80vh;
   display: grid;
@@ -2740,18 +2772,146 @@ h3 {
   font-size: .9rem;
 }
 
+::selection {
+  color: #050509;
+  background: color-mix(in srgb, var(--blue) 55%, var(--pink));
+}
+
+body {
+  background:
+    linear-gradient(140deg, rgba(91, 206, 250, .13) 0%, transparent 24%),
+    linear-gradient(220deg, rgba(245, 169, 184, .14) 0%, transparent 30%),
+    linear-gradient(180deg, #030407 0%, #0a0b12 46%, #0b0710 76%, #050509 100%),
+    var(--paper);
+}
+
+body::before {
+  opacity: .22;
+  background-image:
+    linear-gradient(rgba(251, 247, 255, .045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(251, 247, 255, .045) 1px, transparent 1px),
+    linear-gradient(130deg, transparent 0%, rgba(91, 206, 250, .07) 49%, rgba(245, 169, 184, .07) 51%, transparent 100%);
+  background-size: 48px 48px, 48px 48px, 100% 100%;
+}
+
+.site-header {
+  border-bottom-color: rgba(255, 255, 255, .09);
+  background:
+    linear-gradient(180deg, rgba(10, 10, 18, .88), rgba(5, 5, 9, .68));
+}
+
+.brand-mark {
+  position: relative;
+}
+
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: .38rem;
+  border-radius: inherit;
+  border: 1px solid rgba(255, 255, 255, .08);
+}
+
+.button {
+  transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+
+.button:focus-visible,
+.person-link:focus-visible,
+.header-links a:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+}
+
+.button.primary {
+  box-shadow:
+    0 16px 42px rgba(91, 206, 250, .12),
+    0 16px 42px rgba(245, 169, 184, .12);
+}
+
+.button.primary:hover {
+  box-shadow:
+    0 20px 52px rgba(91, 206, 250, .18),
+    0 20px 52px rgba(245, 169, 184, .16);
+}
+
+.hero h1,
+.profile h1 {
+  text-shadow: 0 18px 70px rgba(91, 206, 250, .13);
+}
+
+.hero-panel,
+.person-link,
+.profile-section,
+.submission-panel {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .06),
+    0 24px 80px rgba(0, 0, 0, .28);
+}
+
+.person-link {
+  position: relative;
+  overflow: hidden;
+}
+
+.person-link::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--blue), var(--pink));
+  opacity: .45;
+}
+
+.person-link:hover::before {
+  opacity: .95;
+}
+
+.profile-avatar,
+.person-avatar {
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .24);
+}
+
+.story {
+  line-height: 2.05;
+  text-wrap: pretty;
+}
+
+.story p {
+  text-wrap: pretty;
+}
+
+.story-section h2,
+.engagement-head h2 {
+  color: var(--ink);
+}
+
 .site-footer {
   width: min(1180px, calc(100% - 2rem));
   margin: 0 auto;
-  padding: 2rem 0 3rem;
-  border-top: 1px solid var(--line);
+  padding: 2.6rem 0 4.2rem;
+  border-top: 1px solid transparent;
+  border-image: linear-gradient(90deg, transparent, rgba(91, 206, 250, .34), rgba(245, 169, 184, .34), transparent) 1;
   color: var(--muted);
   font-size: .92rem;
   line-height: 1.8;
+  text-align: center;
 }
 
 .site-footer p {
   margin: .3rem 0;
+}
+
+.footer-copy {
+  display: grid;
+  justify-items: center;
+  gap: .8rem;
+}
+
+.footer-copy strong {
+  color: var(--ink);
+  font-family: var(--serif);
+  font-weight: 600;
 }
 
 .footer-actions {
@@ -2760,6 +2920,78 @@ h3 {
 
 .footer-actions .button {
   min-height: 2.55rem;
+}
+
+.footer-sprout {
+  position: relative;
+  width: 8rem;
+  height: 5.8rem;
+  margin: 2.5rem auto 0;
+}
+
+.sprout-soil {
+  position: absolute;
+  left: 50%;
+  bottom: .55rem;
+  width: 5.8rem;
+  height: .62rem;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .12), transparent),
+    linear-gradient(90deg, transparent, var(--soil), #9a7050, var(--soil), transparent);
+  transform: translateX(-50%);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .34);
+}
+
+.sprout-stem {
+  position: absolute;
+  left: 50%;
+  bottom: 1rem;
+  width: .18rem;
+  height: 3.2rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--leaf), var(--leaf-dark));
+  transform: translateX(-50%);
+  transform-origin: bottom center;
+  animation: sproutBreathe 4s ease-in-out infinite;
+}
+
+.sprout-leaf {
+  position: absolute;
+  left: 50%;
+  bottom: 3rem;
+  width: 2.55rem;
+  height: 1.36rem;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 100% 0 100% 0;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, .24), transparent 38%),
+    linear-gradient(135deg, var(--leaf), var(--leaf-dark));
+  box-shadow:
+    0 14px 34px rgba(135, 217, 138, .15),
+    inset 0 -1px 0 rgba(0, 0, 0, .18);
+  transform-origin: 0 100%;
+}
+
+.sprout-leaf-left {
+  transform: translateX(-.22rem) rotate(-38deg);
+}
+
+.sprout-leaf-right {
+  border-radius: 0 100% 0 100%;
+  transform: translateX(.22rem) rotate(38deg) scaleX(-1);
+}
+
+.sprout-dew {
+  position: absolute;
+  left: calc(50% + 1.85rem);
+  bottom: 4.04rem;
+  width: .38rem;
+  height: .38rem;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #fff, var(--blue));
+  box-shadow: 0 0 18px rgba(91, 206, 250, .42);
+  animation: dewPulse 4.8s ease-in-out infinite;
 }
 
 .visually-hidden {
@@ -2874,6 +3106,11 @@ h3 {
 
   .flower-button {
     width: 100%;
+  }
+
+  .footer-sprout {
+    transform: scale(.9);
+    transform-origin: top center;
   }
 
   .fact-row {
