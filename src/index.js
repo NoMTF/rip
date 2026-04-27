@@ -1313,6 +1313,7 @@ function baseStyles() {
   --line-strong: rgba(251, 247, 255, .24);
   --petal: #f5a9b8;
   --petal-dark: #f5a9b8;
+  --pink: #f5a9b8;
   --blue: #5bcefa;
   --rose: #f5a9b8;
   --card: rgba(11, 12, 20, .72);
@@ -1848,6 +1849,53 @@ h3 {
   background: rgba(255, 255, 255, .5);
 }
 
+.story-html-heading.story-align-center,
+.story-html-paragraph.story-align-center,
+.story-inline-html-paragraph.story-align-center {
+  text-align: center;
+}
+
+.story-html-heading.story-align-end,
+.story-html-paragraph.story-align-end,
+.story-inline-html-paragraph.story-align-end {
+  display: block;
+  text-align: end;
+}
+
+.story-html-heading.story-align-start,
+.story-html-paragraph.story-align-start,
+.story-inline-html-paragraph.story-align-start {
+  text-align: start;
+}
+
+.story-html-paragraph.story-inline-paragraph {
+  display: inline;
+}
+
+.story-inline-html-paragraph {
+  display: inline;
+}
+
+.story-inline-style {
+  font-weight: 800;
+}
+
+.story ruby {
+  ruby-position: over;
+}
+
+.story rt {
+  color: var(--muted);
+  font-size: .72em;
+}
+
+.story-break {
+  margin: 2rem auto;
+  width: min(16rem, 58%);
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
 .story-details {
   margin: 1rem 0;
   padding: .9rem 1rem;
@@ -1860,6 +1908,134 @@ h3 {
   cursor: pointer;
   color: var(--petal-dark);
   font-weight: 700;
+}
+
+.story-flex-cluster {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 1rem;
+  align-items: start;
+  margin: 1.4rem 0;
+}
+
+.story-flex-cluster .story-gallery {
+  margin: 0;
+}
+
+.story-hexagon {
+  margin: 1.6rem 0;
+  padding: 1.1rem;
+  border: 1px solid rgba(91, 206, 250, .3);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(91, 206, 250, .12), transparent 44%),
+    linear-gradient(315deg, rgba(245, 169, 184, .12), transparent 44%),
+    rgba(255, 255, 255, .04);
+  text-align: center;
+}
+
+.story-hexagon h3,
+.story-hexagon h4 {
+  margin: .25rem 0;
+}
+
+.story-number-divider,
+.story-text-ring {
+  display: grid;
+  place-items: center;
+  margin: 1.8rem auto 1.2rem;
+  color: var(--blue);
+  text-align: center;
+}
+
+.story-number-divider span {
+  display: grid;
+  place-items: center;
+  width: 3.2rem;
+  height: 3.2rem;
+  border: 1px dashed rgba(91, 206, 250, .7);
+  border-radius: 999px;
+  background: rgba(91, 206, 250, .08);
+  box-shadow: 0 0 22px rgba(245, 169, 184, .16);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.story-text-ring {
+  letter-spacing: .24em;
+  opacity: .82;
+}
+
+.story-blur-block {
+  display: inline-block;
+  padding: .55rem .75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .05);
+  filter: blur(4px);
+  transition: filter .2s ease, background .2s ease;
+}
+
+.story-blur-block:hover,
+.story-blur-block:focus {
+  background: rgba(255, 255, 255, .08);
+  filter: none;
+  outline: none;
+}
+
+.story-sakura-field {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: .32rem;
+  margin: 1.6rem auto;
+  color: var(--pink);
+  opacity: .78;
+}
+
+.story-sakura-field span {
+  animation: petalFloat 2.8s ease-in-out infinite;
+  animation-delay: calc(var(--i) * -120ms);
+}
+
+.story-backup-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  margin: 1.2rem 0;
+  padding: .65rem .85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(91, 206, 250, .08);
+  color: var(--ink);
+}
+
+.story-backup-chip span {
+  color: var(--blue);
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.story-memory-stream {
+  display: grid;
+  gap: .7rem;
+  margin: 1.6rem 0;
+  padding: 0;
+  border: 0;
+}
+
+.story-memory-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .65rem;
+}
+
+.story-memory-pair p {
+  margin: 0;
+  padding: .8rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .06);
 }
 
 .story-gallery {
@@ -2472,6 +2648,17 @@ h3 {
   100% { transform: scale(1); }
 }
 
+@keyframes petalFloat {
+  0%, 100% {
+    opacity: .42;
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-.32rem) rotate(8deg);
+  }
+}
+
 .not-found {
   min-height: 80vh;
   display: grid;
@@ -2579,6 +2766,10 @@ h3 {
 
   .engagement-head {
     align-items: flex-start;
+  }
+
+  .story-memory-pair {
+    grid-template-columns: 1fr;
   }
 
   .search {
@@ -2875,7 +3066,12 @@ function cleanMemorialMarkdown(markdown) {
     .replace(/\r\n/g, '\n')
     .split(/\n{2,}/)
     .map(block => block.trim())
-    .filter(block => block && !sourcePattern.test(block))
+    .map(block => block
+      .split('\n')
+      .filter(line => line.trim() && !sourcePattern.test(line))
+      .join('\n')
+      .trim())
+    .filter(Boolean)
     .join('\n\n')
     .trim();
 }
@@ -2901,14 +3097,31 @@ function preprocessMarkdown(markdown) {
     /<([a-z][a-z0-9:-]*)\b[^>]*style\s*=\s*["'][^"']*(?:font-size\s*:\s*0(?:\.\d+)?px|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)[^"']*["'][^>]*>([\s\S]*?)<\/\1>/gi,
     (_, _tag, content) => hiddenHtmlToken(content)
   );
+  text = text.replace(/<blockquote>\s*<CapDownQuote\s+messages=\{([\s\S]*?)\}\s*\/?>\s*<\/blockquote>/gi, (_, messages) => capDownQuoteToken(messages));
+  text = text.replace(/<CapDownQuote\s+messages=\{([\s\S]*?)\}\s*\/?>/gi, (_, messages) => capDownQuoteToken(messages));
   text = text.replace(/<PhotoScroll\s+photos=\{\[([\s\S]*?)\]\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
   text = text.replace(/<PhotoScroll\s+photos=\{(\[[\s\S]*?\])\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
-  text = text.replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, summary) => `\n\n[[SUMMARY:${encodeURIComponent(summary.trim())}]]\n\n`);
+  text = text.replace(/<BlurBlock[^>]*>([\s\S]*?)<\/BlurBlock>/gi, (_, content) => dataToken('BLUR', { content }));
+  text = text.replace(/<DottedNumber\b([^>]*)\/?>/gi, (_, attrs) => dataToken('DOTTED_NUMBER', { value: readHtmlAttr(attrs, 'n') || '' }));
+  text = text.replace(/<TextRing\b([^>]*)\/?>/gi, (_, attrs) => dataToken('TEXT_RING', {
+    text: readHtmlAttr(attrs, 'text') || '',
+    fontSize: readHtmlAttr(attrs, 'fontSize') || readHtmlAttr(attrs, 'fontsize') || ''
+  }));
+  text = text.replace(/<Sakura\b([^>]*)\/?>/gi, (_, attrs) => dataToken('SAKURA', { count: readHtmlAttr(attrs, 'count') || '' }));
+  text = text.replace(/<ChannelBackupButton\b([^>]*)\/?>/gi, (_, attrs) => dataToken('CHANNEL_BACKUP', { platform: readHtmlAttr(attrs, 'platform') || '' }));
+  text = text.replace(/<Hexagon\b[^>]*>/gi, '\n\n[[HEXAGON_OPEN]]\n\n');
+  text = text.replace(/<\/Hexagon>/gi, '\n\n[[HEXAGON_CLOSE]]\n\n');
+  text = text.replace(/<div\b([^>]*)>\s*<\/div>/gi, (_, attrs) => emptyDivToken(attrs));
+  text = text.replace(/<div\b([^>]*)>/gi, (_, attrs) => divOpenToken(attrs));
+  text = text.replace(/<\/div>/gi, '\n\n[[DIV_CLOSE]]\n\n');
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, summary) => dataToken('SUMMARY', { content: cleanSummaryMarkup(summary) }));
   text = text.replace(/<details[^>]*>/gi, '\n\n[[DETAILS_OPEN]]\n\n');
   text = text.replace(/<\/details>/gi, '\n\n[[DETAILS_CLOSE]]\n\n');
-  text = text.replace(/<\/?BlurBlock[^>]*>/gi, '\n');
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<div[^>]*>\s*<\/div>/gi, '\n');
+  text = text.replace(/<h([1-6])\b([^>]*)>([\s\S]*?)<\/h\1>/gi, (_, level, attrs, content) => htmlHeadingToken(level, attrs, content));
+  text = text.replace(/<p\b([^>]*)>([\s\S]*?)<\/p>/gi, (_, attrs, content) => htmlParagraphToken(attrs, content));
+  text = text.replace(/<blockquote\b[^>]*>/gi, '\n\n[[BLOCKQUOTE_OPEN]]\n\n');
+  text = text.replace(/<\/blockquote>/gi, '\n\n[[BLOCKQUOTE_CLOSE]]\n\n');
   text = text.replace(/<\/?[A-Z][A-Za-z0-9]*(?:\s[^>]*)?\/?>/g, '\n');
 
   return text;
@@ -2926,6 +3139,108 @@ function galleryToken(markup) {
 
 function hiddenHtmlToken(content) {
   return `\n\n[[HIDDEN_HTML:${encodeURIComponent(String(content || '').trim())}]]\n\n`;
+}
+
+function dataToken(name, data) {
+  return `\n\n[[${name}:${encodeTokenData(data)}]]\n\n`;
+}
+
+function inlineDataToken(name, data) {
+  return `[[${name}:${encodeTokenData(data)}]]`;
+}
+
+function encodeTokenData(data) {
+  return encodeURIComponent(JSON.stringify(data || {})).replace(/\*/g, '%2A');
+}
+
+function readHtmlAttr(attrs, name) {
+  const pattern = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const match = String(attrs || '').match(pattern);
+  return match ? (match[1] || match[2] || match[3] || '').trim() : '';
+}
+
+function decodeTokenData(value) {
+  try {
+    return JSON.parse(decodeURIComponent(value));
+  } catch {
+    return {};
+  }
+}
+
+function htmlHeadingToken(level, attrs, content) {
+  return dataToken('HTML_HEADING', {
+    level: Math.min(Math.max(Number(level) || 3, 1), 6),
+    align: extractTextAlign(attrs),
+    content: cleanHtmlFragment(content)
+  });
+}
+
+function htmlParagraphToken(attrs, content) {
+  return inlineDataToken('HTML_P', {
+    align: extractTextAlign(attrs),
+    inline: /display\s*:\s*inline/i.test(readHtmlAttr(attrs, 'style')),
+    content: cleanHtmlFragment(content)
+  });
+}
+
+function extractTextAlign(attrs) {
+  const style = readHtmlAttr(attrs, 'style');
+  const styleAlign = style.match(/text-align\s*:\s*(start|end|left|right|center)/i)?.[1];
+  return normalizeAlign(styleAlign || readHtmlAttr(attrs, 'align'));
+}
+
+function normalizeAlign(value) {
+  const align = String(value || '').trim().toLowerCase();
+  if (align === 'right' || align === 'end') return 'end';
+  if (align === 'left' || align === 'start') return 'start';
+  if (align === 'center') return 'center';
+  return '';
+}
+
+function cleanHtmlFragment(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .trim();
+}
+
+function cleanSummaryMarkup(value) {
+  return cleanHtmlFragment(value)
+    .replace(/<\/p>\s*<p\b[^>]*>/gi, '\n')
+    .replace(/<p\b[^>]*>/gi, '')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/h[1-6]>/gi, '\n')
+    .replace(/<h[1-6]\b[^>]*>/gi, '')
+    .replace(/<blockquote\b[^>]*>/gi, '\n')
+    .replace(/<\/blockquote>/gi, '\n')
+    .replace(/<ruby>([\s\S]*?)<rt>([\s\S]*?)<\/rt><\/ruby>/gi, '$1（$2）')
+    .replace(/<span\b[^>]*>([\s\S]*?)<\/span>/gi, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function capDownQuoteToken(markup) {
+  const messages = [];
+  String(markup || '').replace(/"([^"\\]*(?:\\.[^"\\]*)*)"/g, (_, value) => {
+    messages.push(value.replace(/\\"/g, '"'));
+    return '';
+  });
+  return dataToken('CAPDOWN_QUOTE', { messages });
+}
+
+function emptyDivToken(attrs) {
+  const style = readHtmlAttr(attrs, 'style');
+  if (/height\s*:\s*100vh/i.test(style)) {
+    return dataToken('SPACER', { size: 'large' });
+  }
+  return '\n';
+}
+
+function divOpenToken(attrs) {
+  const style = readHtmlAttr(attrs, 'style');
+  const mode = /display\s*:\s*flex/i.test(style) ? 'flex' : 'generic';
+  return dataToken('DIV_OPEN', { mode });
 }
 
 function extractFootnotes(lines) {
@@ -2982,10 +3297,49 @@ function renderMarkdownLines(lines, personPath) {
       continue;
     }
 
+    if (trimmed === '[[HEXAGON_OPEN]]') {
+      flushParagraph();
+      html += '<section class="story-hexagon">';
+      continue;
+    }
+
+    if (trimmed === '[[HEXAGON_CLOSE]]') {
+      flushParagraph();
+      html += '</section>';
+      continue;
+    }
+
+    if (trimmed === '[[BLOCKQUOTE_OPEN]]') {
+      flushParagraph();
+      html += '<blockquote class="story-html-quote">';
+      continue;
+    }
+
+    if (trimmed === '[[BLOCKQUOTE_CLOSE]]') {
+      flushParagraph();
+      html += '</blockquote>';
+      continue;
+    }
+
+    if (trimmed === '[[DIV_CLOSE]]') {
+      flushParagraph();
+      html += '</div>';
+      continue;
+    }
+
+    const divOpen = trimmed.match(/^\[\[DIV_OPEN:(.*)\]\]$/);
+    if (divOpen) {
+      flushParagraph();
+      const data = decodeTokenData(divOpen[1]);
+      html += `<div class="${data.mode === 'flex' ? 'story-flex-cluster' : 'story-html-container'}">`;
+      continue;
+    }
+
     const summary = trimmed.match(/^\[\[SUMMARY:(.*)\]\]$/);
     if (summary) {
       flushParagraph();
-      html += `<summary>${renderInline(decodeURIComponent(summary[1]), personPath)}</summary>`;
+      const data = decodeTokenData(summary[1]);
+      html += `<summary>${renderInline(data.content || '', personPath).replace(/\n/g, '<br>')}</summary>`;
       continue;
     }
 
@@ -3000,6 +3354,69 @@ function renderMarkdownLines(lines, personPath) {
     if (hidden) {
       flushParagraph();
       html += `<p class="story-hidden-effect" aria-hidden="true">${renderInline(decodeURIComponent(hidden[1]), personPath)}</p>`;
+      continue;
+    }
+
+    const htmlHeading = trimmed.match(/^\[\[HTML_HEADING:(.*)\]\]$/);
+    if (htmlHeading) {
+      flushParagraph();
+      html += renderHtmlHeading(htmlHeading[1], personPath);
+      continue;
+    }
+
+    const htmlParagraph = trimmed.match(/^\[\[HTML_P:(.*)\]\]$/);
+    if (htmlParagraph) {
+      flushParagraph();
+      html += renderHtmlParagraph(htmlParagraph[1], personPath);
+      continue;
+    }
+
+    const dottedNumber = trimmed.match(/^\[\[DOTTED_NUMBER:(.*)\]\]$/);
+    if (dottedNumber) {
+      flushParagraph();
+      html += renderDottedNumber(dottedNumber[1]);
+      continue;
+    }
+
+    const textRing = trimmed.match(/^\[\[TEXT_RING:(.*)\]\]$/);
+    if (textRing) {
+      flushParagraph();
+      html += renderTextRing(textRing[1]);
+      continue;
+    }
+
+    const blur = trimmed.match(/^\[\[BLUR:(.*)\]\]$/);
+    if (blur) {
+      flushParagraph();
+      html += renderBlurBlock(blur[1], personPath);
+      continue;
+    }
+
+    const sakura = trimmed.match(/^\[\[SAKURA:(.*)\]\]$/);
+    if (sakura) {
+      flushParagraph();
+      html += renderSakura(sakura[1]);
+      continue;
+    }
+
+    const channelBackup = trimmed.match(/^\[\[CHANNEL_BACKUP:(.*)\]\]$/);
+    if (channelBackup) {
+      flushParagraph();
+      html += renderChannelBackup(channelBackup[1]);
+      continue;
+    }
+
+    const capDownQuote = trimmed.match(/^\[\[CAPDOWN_QUOTE:(.*)\]\]$/);
+    if (capDownQuote) {
+      flushParagraph();
+      html += renderCapDownQuote(capDownQuote[1], personPath);
+      continue;
+    }
+
+    const spacer = trimmed.match(/^\[\[SPACER:(.*)\]\]$/);
+    if (spacer) {
+      flushParagraph();
+      html += renderSpacer(spacer[1]);
       continue;
     }
 
@@ -3047,11 +3464,81 @@ function renderMarkdownLines(lines, personPath) {
       continue;
     }
 
+    if (/^-{3,}$/.test(trimmed)) {
+      flushParagraph();
+      html += '<hr class="story-break">';
+      continue;
+    }
+
     paragraph.push(trimmed);
   }
 
   flushParagraph();
   return html;
+}
+
+function renderHtmlHeading(value, personPath) {
+  const data = decodeTokenData(value);
+  const level = Math.min(Math.max(Number(data.level) || 3, 1), 6);
+  const alignClass = data.align ? ` story-align-${escapeAttr(data.align)}` : '';
+  return `<h${level} class="story-html-heading${alignClass}">${renderInline(data.content || '', personPath).replace(/\n/g, '<br>')}</h${level}>`;
+}
+
+function renderHtmlParagraph(value, personPath) {
+  const data = decodeTokenData(value);
+  const classes = [
+    'story-html-paragraph',
+    data.align ? `story-align-${data.align}` : '',
+    data.inline ? 'story-inline-paragraph' : ''
+  ].filter(Boolean).join(' ');
+  return `<p class="${escapeAttr(classes)}">${renderInline(data.content || '', personPath).replace(/\n/g, '<br>')}</p>`;
+}
+
+function renderDottedNumber(value) {
+  const data = decodeTokenData(value);
+  return `<div class="story-number-divider" aria-hidden="true"><span>${escapeHtml(data.value || '•')}</span></div>`;
+}
+
+function renderTextRing(value) {
+  const data = decodeTokenData(value);
+  const text = String(data.text || '✦');
+  return `<div class="story-text-ring" aria-hidden="true">${escapeHtml(text)}</div>`;
+}
+
+function renderBlurBlock(value, personPath) {
+  const data = decodeTokenData(value);
+  return `<p class="story-blur-block" tabindex="0">${renderInline(data.content || '', personPath).replace(/\n/g, '<br>')}</p>`;
+}
+
+function renderSakura(value) {
+  const data = decodeTokenData(value);
+  const count = Math.min(Math.max(Number(data.count) || 12, 6), 18);
+  const petals = Array.from({ length: count }, (_, index) => `<span style="--i:${index}">✦</span>`).join('');
+  return `<div class="story-sakura-field" aria-hidden="true">${petals}</div>`;
+}
+
+function renderChannelBackup(value) {
+  const data = decodeTokenData(value);
+  const platform = data.platform ? `${data.platform}` : 'channel';
+  return `<aside class="story-backup-chip"><span>${escapeHtml(platform)}</span><strong>频道备份</strong></aside>`;
+}
+
+function renderCapDownQuote(value, personPath) {
+  const data = decodeTokenData(value);
+  const messages = Array.isArray(data.messages) ? data.messages.filter(Boolean) : [];
+  if (!messages.length) return '';
+  const pairs = [];
+  for (let i = 0; i < messages.length; i += 2) {
+    pairs.push(messages.slice(i, i + 2));
+  }
+  return `<blockquote class="story-memory-stream">${pairs.map(pair => `
+    <div class="story-memory-pair">${pair.map(item => `<p>${renderInline(item, personPath)}</p>`).join('')}</div>`).join('')}
+  </blockquote>`;
+}
+
+function renderSpacer(value) {
+  const data = decodeTokenData(value);
+  return `<div class="story-spacer ${data.size === 'large' ? 'story-spacer-large' : ''}" aria-hidden="true"></div>`;
 }
 
 function renderGallery(value, personPath) {
@@ -3067,7 +3554,18 @@ function renderGallery(value, personPath) {
 }
 
 function renderInline(value, personPath) {
-  let html = escapeHtml(value);
+  let source = String(value || '')
+    .replace(/<ruby>([\s\S]*?)<rt>([\s\S]*?)<\/rt><\/ruby>/gi, (_, base, rt) => inlineDataToken('RUBY', {
+      base: cleanHtmlFragment(base),
+      rt: cleanHtmlFragment(rt)
+    }))
+    .replace(/<span\b([^>]*)>([\s\S]*?)<\/span>/gi, (_, attrs, content) => inlineDataToken('SPAN_STYLE', {
+      style: sanitizeInlineStyle(readHtmlAttr(attrs, 'style')),
+      content: cleanHtmlFragment(content)
+    }))
+    .replace(/<br\s*\/?>/gi, '\n');
+
+  let html = escapeHtml(source);
 
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
     const src = toContentAssetUrl(decodeHtml(url), personPath);
@@ -3085,8 +3583,52 @@ function renderInline(value, personPath) {
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   html = html.replace(/\[\^([^\]]+)\]/g, '<sup>[$1]</sup>');
+  html = renderInlineDataTokens(html, personPath);
 
   return html;
+}
+
+function renderInlineDataTokens(html, personPath) {
+  return html
+    .replace(/\[\[HTML_P:([^\]]+)\]\]/g, (_, value) => {
+      const data = decodeTokenData(value);
+      const classes = [
+        'story-inline-html-paragraph',
+        data.align ? `story-align-${data.align}` : '',
+        data.inline ? 'story-inline-paragraph' : ''
+      ].filter(Boolean).join(' ');
+      return `<span class="${escapeAttr(classes)}">${renderInline(data.content || '', personPath).replace(/\n/g, '<br>')}</span>`;
+    })
+    .replace(/\[\[RUBY:([^\]]+)\]\]/g, (_, value) => {
+      const data = decodeTokenData(value);
+      return `<ruby>${renderInline(data.base || '', personPath)}<rt>${escapeHtml(data.rt || '')}</rt></ruby>`;
+    })
+    .replace(/\[\[SPAN_STYLE:([^\]]+)\]\]/g, (_, value) => {
+      const data = decodeTokenData(value);
+      const style = data.style ? ` style="${escapeAttr(data.style)}"` : '';
+      return `<span class="story-inline-style"${style}>${renderInline(data.content || '', personPath)}</span>`;
+    });
+}
+
+function sanitizeInlineStyle(value) {
+  const style = String(value || '');
+  const declarations = [];
+  const background = style.match(/background\s*:\s*linear-gradient\(([^;]+)\)/i)?.[1];
+  if (background && /^[-#%,.\s\w()]+$/.test(background)) {
+    declarations.push(`--story-gradient: linear-gradient(${background})`);
+  }
+  if (/font-weight\s*:\s*bold/i.test(style)) {
+    declarations.push('font-weight: 800');
+  }
+  if (/background-clip\s*:\s*text/i.test(style)) {
+    declarations.push('background: var(--story-gradient)');
+    declarations.push('-webkit-background-clip: text');
+    declarations.push('background-clip: text');
+  }
+  if (/color\s*:\s*transparent/i.test(style)) {
+    declarations.push('color: transparent');
+  }
+  return declarations.join('; ');
 }
 
 function decodeHtml(value) {
