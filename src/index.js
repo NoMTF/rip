@@ -86,6 +86,8 @@ const SUBMISSION_FILE_LIMIT = 5_000_000;
 const SUBMISSION_ATTACHMENT_LIMIT = 12;
 const SUBMISSION_COOLDOWN_MS = 120_000;
 const SUBMISSION_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const SUBMISSION_MARKDOWN_TYPES = new Set(['', 'text/plain', 'text/markdown', 'application/octet-stream']);
+const SUBMISSION_MARKDOWN_EXTENSIONS = new Set(['.md', '.mdx']);
 const SUBMISSION_CODE_TYPES = new Set([
   '',
   'text/plain',
@@ -125,6 +127,7 @@ const SUBMISSION_TEXT_FIELDS = [
   'works',
   'sources',
   'sourceNote',
+  'markdownNote',
   'effects',
   'custom',
   'website'
@@ -136,9 +139,41 @@ const SUBMISSION_FILE_FIELDS = [
   { name: 'deathImages', role: 'death', label: '离世', kind: 'image' },
   { name: 'remembranceImages', role: 'remembrance', label: '念想', kind: 'image' },
   { name: 'worksImages', role: 'works', label: '作品', kind: 'image' },
+  { name: 'markdownFiles', role: 'fullMarkdown', label: '整份 Markdown 页面', kind: 'markdown' },
   { name: 'effectFiles', role: 'effects', label: '排版与特殊效果', kind: 'code' },
   { name: 'customImages', role: 'custom', label: '自选附加项', kind: 'image' }
 ];
+const MARKDOWN_SUBMISSION_EXAMPLE = `# 展示名
+
+> 一句话简介可以放在这里。也可以继续使用表单里的基础信息。
+
+## 简介
+
+这里写 ta 是谁：常用名字、性格、爱好、给朋友留下的印象。
+
+## 友人的回忆
+
+Z60 是我这辈子见过第二特别的人。
+
+<p style="text-align: end;">——伊良子，2025 年 2 月 7 日</p>
+
+<details>
+<summary>展开一段更长的回忆</summary>
+
+这里可以放较长的文章、翻译、资料说明，或不想默认全部展开的内容。
+
+</details>
+
+## 图片位置
+
+![生活照 1](life-1.jpg)
+![作品截图](works-1.png)
+
+## 念想
+
+<p style="text-align: center; color: #5bcefa;">愿你被温柔记住。</p>
+
+<ruby>过载<rt>Overload</rt></ruby>`;
 
 export class MemorialEngagement extends DurableObject {
   constructor(ctx, env) {
@@ -628,9 +663,7 @@ async function collectSubmissionFiles(form, field, attachments, totalSize) {
       throw new Error('单个附件不能超过 5MB。');
     }
     if (!isAllowedSubmissionFile(file, field)) {
-      throw new Error(field.kind === 'code'
-        ? '排版代码附件仅支持 txt、md、mdx、html、css、js、json 或 xml。'
-        : '图片仅支持 JPG、PNG、WebP 或 GIF。');
+      throw new Error(submissionFileTypeError(field.kind));
     }
 
     totalSize += file.size;
@@ -653,10 +686,19 @@ async function collectSubmissionFiles(form, field, attachments, totalSize) {
 
 function isAllowedSubmissionFile(file, field) {
   if (field.kind === 'image') return SUBMISSION_IMAGE_TYPES.has(file.type);
+  if (field.kind === 'markdown') {
+    return SUBMISSION_MARKDOWN_TYPES.has(file.type) || SUBMISSION_MARKDOWN_EXTENSIONS.has(fileExtension(file.name));
+  }
   if (field.kind === 'code') {
     return SUBMISSION_CODE_TYPES.has(file.type) || SUBMISSION_CODE_EXTENSIONS.has(fileExtension(file.name));
   }
   return false;
+}
+
+function submissionFileTypeError(kind) {
+  if (kind === 'markdown') return '整份 Markdown 页面仅支持 md 或 mdx 文件。';
+  if (kind === 'code') return '排版代码附件仅支持 txt、md、mdx、html、css、js、json 或 xml。';
+  return '图片仅支持 JPG、PNG、WebP 或 GIF。';
 }
 
 function fileExtension(name) {
@@ -810,6 +852,7 @@ ${section('图片', submission.images)}
 ${section('作品', submission.works)}
 ${section('资料来源', submission.sources)}
 ${section('资料/授权说明', submission.sourceNote)}
+${section('整份 Markdown 页面说明', submission.markdownNote)}
 ${section('排版与特殊效果', submission.effects)}
 ${section('自选附加项', submission.custom)}
 ---
@@ -1057,6 +1100,19 @@ function renderSubmitPage() {
       </div>
     </section>
 
+    <section class="submission-panel" aria-labelledby="markdown-title">
+      <div class="panel-heading">
+        <p class="eyebrow">PAGE FILE</p>
+        <h2 id="markdown-title">整份 Markdown 页面稿</h2>
+        <p>如果你已经写好一整篇纪念页面，可以直接上传 .md 或 .mdx。文字结构、图片占位、HTML/MDX 标签、颜色、折叠段落、注音等效果都可以集中写在一个文件里。</p>
+      </div>
+      <div class="field-grid single">
+        ${renderTextarea('整份 Markdown/MDX 文件说明', 'markdownNote', '例：请以这个 md 文件为主；表单里的简介只作为摘要。life-1.jpg 放在“友人的回忆”后面；粉蓝渐变文字请尽量保留。', '告诉维护者这个文件如何使用、哪些表单字段可以覆盖、图片文件名对应哪里。')}
+        ${renderFile('上传整份 Markdown/MDX', 'markdownFiles', '.md,.mdx,text/markdown,text/plain,application/octet-stream', '支持 .md 或 .mdx，单个文件不超过 5MB；附件会标记为“整份 Markdown 页面”。')}
+        ${renderMarkdownExample()}
+      </div>
+    </section>
+
     <section class="submission-panel" aria-labelledby="effects-title">
       <div class="panel-heading">
         <p class="eyebrow">FORMAT</p>
@@ -1121,6 +1177,15 @@ function renderFile(label, name, accept, help, multiple = false) {
       <input name="${escapeAttr(name)}" type="file" accept="${escapeAttr(accept)}"${multiple ? ' multiple' : ''}>
       <small>${escapeHtml(help)}</small>
     </label>`;
+}
+
+function renderMarkdownExample() {
+  return `
+    <details class="markdown-example">
+      <summary>查看整份 Markdown 示例</summary>
+      <p>可以把下面内容保存成 <strong>memorial.md</strong> 上传；图片文件名和分栏图片上传项对应即可。</p>
+      <pre><code>${escapeHtml(MARKDOWN_SUBMISSION_EXAMPLE)}</code></pre>
+    </details>`;
 }
 
 function renderPersonCard(person) {
@@ -2686,6 +2751,45 @@ h3 {
   font-weight: 800;
   background: linear-gradient(135deg, var(--blue), var(--pink));
   cursor: pointer;
+}
+
+.markdown-example {
+  border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--pink) 22%, rgba(255, 255, 255, .12));
+  border-radius: var(--radius);
+  padding: .9rem 1rem;
+  background:
+    linear-gradient(135deg, rgba(91, 206, 250, .08), transparent 34%),
+    linear-gradient(315deg, rgba(245, 169, 184, .08), transparent 36%),
+    rgba(255, 255, 255, .045);
+}
+
+.markdown-example summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 820;
+}
+
+.markdown-example p {
+  margin: .75rem 0 .8rem;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.markdown-example pre {
+  max-height: 26rem;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: calc(var(--radius) - 2px);
+  padding: 1rem;
+  color: color-mix(in srgb, var(--ink) 88%, var(--blue));
+  background: rgba(5, 5, 9, .72);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markdown-example code {
+  font: .92rem/1.72 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .submission-actions {
