@@ -1150,6 +1150,9 @@ function renderFooter() {
   return `
 <footer class="site-footer">
   <p><strong>${escapeHtml(SITE.title)}</strong> 是 ${escapeHtml(SITE.subtitle)} 的纪念索引实验。</p>
+  <p class="footer-actions">
+    <a class="button primary" href="/submit">提交纪念条目</a>
+  </p>
 </footer>`;
 }
 
@@ -2334,6 +2337,14 @@ h3 {
 
 .site-footer p {
   margin: .3rem 0;
+}
+
+.footer-actions {
+  margin-top: 1rem !important;
+}
+
+.footer-actions .button {
+  min-height: 2.55rem;
 }
 
 .visually-hidden {
