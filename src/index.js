@@ -2755,6 +2755,10 @@ function preprocessMarkdown(markdown) {
   let text = String(markdown || '').replace(/\r\n/g, '\n');
 
   text = text.replace(/<!--[\s\S]*?-->/g, '\n');
+  text = text.replace(
+    /<([a-z][a-z0-9:-]*)\b[^>]*style\s*=\s*["'][^"']*(?:font-size\s*:\s*0(?:\.\d+)?px|display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi,
+    '\n'
+  );
   text = text.replace(/<PhotoScroll\s+photos=\{\[([\s\S]*?)\]\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
   text = text.replace(/<PhotoScroll\s+photos=\{(\[[\s\S]*?\])\}\s*\/?>/gi, (_, photos) => galleryToken(photos));
   text = text.replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, summary) => `\n\n[[SUMMARY:${encodeURIComponent(summary.trim())}]]\n\n`);
