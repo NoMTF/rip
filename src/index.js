@@ -7,10 +7,10 @@ import { DurableObject } from 'cloudflare:workers';
 const SITE = {
   title: '勿忘我',
   subtitle: 'rip.lgbt',
-  description: '一份为逝去的跨性别者、性别多元者与友跨人士保留名字的纪念索引。',
-  dataHost: 'https://data.one-among.us'
+  description: '一份为逝去的跨性别者、性别多元者与友跨人士保留名字的纪念索引。'
 };
 
+const SELF_HOSTED_MEMORIALS = [];
 const SUBMISSION_TO_EMAIL = 'wangyanluo233@gmail.com';
 const RESEND_EMAILS_ENDPOINT = 'https://api.resend.com/emails';
 
@@ -332,8 +332,7 @@ export class MemorialEngagement extends DurableObject {
 }
 
 async function getPeople() {
-  const list = await fetchJson('/people-list.json');
-  return list
+  return SELF_HOSTED_MEMORIALS
     .map(normalizePerson)
     .filter(person => person.id && person.name);
 }
@@ -348,46 +347,7 @@ async function getProfile(inputId) {
   const person = await getPerson(inputId);
   if (!person) return null;
 
-  const [infoResult, pageResult] = await Promise.allSettled([
-    fetchJson(`/people/${encodeURIComponent(person.path)}/info.json`),
-    fetchText(`/people/${encodeURIComponent(person.path)}/page.md`)
-  ]);
-
-  const info = infoResult.status === 'fulfilled' ? infoResult.value : null;
-  const pageMarkdown = pageResult.status === 'fulfilled' ? pageResult.value : '';
-  return normalizeProfile(person, info, pageMarkdown);
-}
-
-async function fetchJson(path) {
-  const response = await fetch(`${SITE.dataHost}${path}`, {
-    headers: { accept: 'application/json' },
-    cf: {
-      cacheTtl: 900,
-      cacheEverything: true
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Unable to read memorial data: ${response.status}`);
-  }
-
-  return response.json();
-}
-
-async function fetchText(path) {
-  const response = await fetch(`${SITE.dataHost}${path}`, {
-    headers: { accept: 'text/markdown,text/plain,*/*' },
-    cf: {
-      cacheTtl: 900,
-      cacheEverything: true
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Unable to read memorial page: ${response.status}`);
-  }
-
-  return response.text();
+  return normalizeProfile(person, person, person.contentMarkdown);
 }
 
 async function handleEngagement(request, env, inputId, action) {
@@ -494,7 +454,7 @@ async function handleSubmission(request, env) {
 function normalizePerson(raw) {
   const path = String(raw.path || raw.id || '').trim();
   const id = String(raw.id || path).trim();
-  const sortKey = String(raw.sortKey || '').trim();
+  const sortKey = String(raw.sortKey || raw.departure || '').trim();
 
   return {
     id,
@@ -503,13 +463,17 @@ function normalizePerson(raw) {
     desc: String(raw.desc || '').trim(),
     departure: normalizeDeparture(sortKey),
     sortKey,
-    profileUrl: toSourceAssetUrl(raw.profileUrl, path)
+    profileUrl: toAssetUrl(raw.profileUrl || raw.avatar),
+    facts: raw.facts || raw.info || [],
+    websites: raw.websites || [],
+    contentMarkdown: String(raw.contentMarkdown || raw.pageMarkdown || raw.markdown || '')
   };
 }
 
 function normalizeProfile(person, info, pageMarkdown = '') {
-  const facts = Array.isArray(info?.info)
-    ? info.info
+  const rawFacts = Array.isArray(info?.facts) ? info.facts : info?.info;
+  const facts = Array.isArray(rawFacts)
+    ? rawFacts
         .filter(pair => Array.isArray(pair) && pair.length >= 2)
         .map(pair => ({
           label: String(pair[0]),
@@ -530,7 +494,7 @@ function normalizeProfile(person, info, pageMarkdown = '') {
     ...person,
     name: String(info?.name || person.name),
     desc: String(info?.desc || person.desc || '').trim(),
-    profileUrl: toSourceAssetUrl(info?.profileUrl || person.profileUrl, person.path),
+    profileUrl: toAssetUrl(info?.profileUrl || info?.avatar || person.profileUrl),
     facts,
     websites,
     contentHtml: renderMarkdown(cleanMemorialMarkdown(stripFrontmatter(pageMarkdown)), person.path),
@@ -544,19 +508,21 @@ function normalizeDeparture(sortKey) {
   return sortKey;
 }
 
-function toSourceAssetUrl(template, personPath) {
+function toAssetUrl(template) {
   if (!template) return '';
-  const value = String(template);
-  if (isSafeUrl(value)) return value;
-  if (!value.includes('${path}')) return '';
-  return `${SITE.dataHost}/people/${encodeURIComponent(personPath)}${value.replace('${path}', '')}`;
+  const value = String(template).trim();
+  if (isSafeUrl(value) || value.startsWith('/')) return value;
+  return '';
 }
 
 function toContentAssetUrl(template, personPath) {
   if (!template) return '';
-  const value = String(template).trim().replaceAll('${path}', `${SITE.dataHost}/people/${encodeURIComponent(personPath)}`);
-  if (isSafeUrl(value)) return value;
-  if (value.startsWith('/')) return `${SITE.dataHost}${value}`;
+  const assetRoot = `/assets/memorials/${encodeURIComponent(personPath)}`;
+  const value = String(template).trim().replaceAll('${path}', assetRoot);
+  if (isSafeUrl(value) || value.startsWith('/')) return value;
+  if (/^[\w./%() -]+\.(?:avif|gif|jpe?g|png|svg|webp)$/i.test(value) && !value.includes('..')) {
+    return `${assetRoot}/${value.replace(/^\.?\//, '')}`;
+  }
   return '';
 }
 
@@ -942,7 +908,11 @@ function renderHomePage(people) {
   const visibleDated = people.filter(person => isFullDate(person.departure));
   const latest = visibleDated[0]?.departure || '';
   const earliest = visibleDated[visibleDated.length - 1]?.departure || '';
-  const cards = people.map(renderPersonCard).join('');
+  const cards = people.length ? people.map(renderPersonCard).join('') : renderEmptyIndex();
+  const heroAction = people.length
+    ? `<a class="button primary" href="#memorials">查看 ${people.length} 位</a>`
+    : `<a class="button primary" href="/submit">提交纪念条目</a>`;
+  const rangeLabel = people.length ? formatYearRange(earliest, latest) : '待收录';
 
   return shell({
     title: `${SITE.title} · ${SITE.subtitle}`,
@@ -966,23 +936,23 @@ function renderHomePage(people) {
     <div class="hero-copy">
       <p class="eyebrow">REST IN PEACE · IN MEMORY</p>
       <h1 id="hero-title">勿忘我</h1>
-      <p class="lede">名字不是装饰。名字是一个人来过、被爱过、仍应被温柔提起的证据。</p>
+      <p class="lede">名字不是装饰。名字是一个人来过、被爱过、仍应被温柔提起的证据。本站正在转为独立维护，只展示经授权或自建整理的纪念条目。</p>
       <div class="hero-actions">
-        <a class="button primary" href="#memorials">查看 ${people.length} 位</a>
+        ${heroAction}
       </div>
     </div>
     <aside class="hero-panel" aria-label="索引统计">
       <div>
         <span class="stat-number">${people.length}</span>
-        <span class="stat-label">已同步条目</span>
+        <span class="stat-label">自建条目</span>
       </div>
       <div>
-        <span class="stat-number">${escapeHtml(formatYearRange(earliest, latest))}</span>
+        <span class="stat-number">${escapeHtml(rangeLabel)}</span>
         <span class="stat-label">时间范围</span>
       </div>
       <div>
-        <span class="stat-number">15m</span>
-        <span class="stat-label">数据缓存</span>
+        <span class="stat-number">投稿</span>
+        <span class="stat-label">接受独立提交</span>
       </div>
     </aside>
   </section>
@@ -1002,7 +972,7 @@ function renderHomePage(people) {
         <input id="search" type="search" placeholder="搜索姓名、ID 或日期" autocomplete="off">
       </label>
     </div>
-    <p id="resultCount" class="result-count">显示 ${people.length} 位</p>
+    <p id="resultCount" class="result-count">${people.length ? `显示 ${people.length} 位` : '暂无公开条目'}</p>
     <div class="people-grid" data-grid>
       ${cards}
     </div>
@@ -1218,6 +1188,16 @@ function renderPersonCard(person) {
 </article>`;
 }
 
+function renderEmptyIndex() {
+  return `
+<div class="empty-index">
+  <p class="eyebrow">INDEPENDENT ARCHIVE</p>
+  <h3>索引正在重新整理</h3>
+  <p>为避免未经授权转载，已移除外部同步条目。新的纪念页面会从授权投稿、公开许可材料和维护者自建整理开始。</p>
+  <a class="button primary" href="/submit">提交纪念条目</a>
+</div>`;
+}
+
 function renderDetailPage(profile) {
   const avatar = profile.profileUrl
     ? `<img class="profile-avatar" src="${escapeAttr(profile.profileUrl)}" alt="" decoding="async" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'profile-mark',textContent:'${escapeAttr(firstGlyph(profile.name))}'}))">`
@@ -1375,14 +1355,14 @@ function renderNotFound() {
 
 function renderErrorPage(error) {
   return shell({
-    title: `数据暂不可用 · ${SITE.title}`,
-    description: '数据源暂时不可用。',
+    title: `页面暂不可用 · ${SITE.title}`,
+    description: '页面暂时不可用。',
     content: `
 <main class="not-found">
   <div>
-    <p class="eyebrow">DATA UNAVAILABLE</p>
-    <h1>数据暂时读不到</h1>
-    <p>人员数据暂时不可用，请稍后重试。</p>
+    <p class="eyebrow">TEMPORARILY UNAVAILABLE</p>
+    <h1>页面暂时读不到</h1>
+    <p>页面暂时不可用，请稍后重试。</p>
     <p class="error-line">${escapeHtml(error?.message || 'Unknown error')}</p>
     <a class="button primary" href="/">回到首页</a>
   </div>
@@ -1737,6 +1717,33 @@ h3 {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
   gap: .75rem;
+}
+
+.empty-index {
+  grid-column: 1 / -1;
+  display: grid;
+  justify-items: start;
+  gap: .8rem;
+  min-height: 14rem;
+  padding: clamp(1.1rem, 3vw, 1.6rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, rgba(91, 206, 250, .09), transparent 34%),
+    linear-gradient(315deg, rgba(245, 169, 184, .1), transparent 36%),
+    rgba(255, 255, 255, .055);
+}
+
+.empty-index h3 {
+  margin: 0;
+  font-size: clamp(1.55rem, 3vw, 2.4rem);
+}
+
+.empty-index p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.8;
 }
 
 .person-card {
@@ -3458,18 +3465,8 @@ function stripFrontmatter(markdown) {
 }
 
 function cleanMemorialMarkdown(markdown) {
-  const sourcePattern = /One\s+Among\s+Us|one-among\.us|\u90a3\u4e9b\u79cb\u53f6|\u6761\u76ee\u8d21\u732e|\u672c\u4e34\u65f6\u9875\u9762|Github\s*\u6570\u636e\u5e93|GitHub\s*\u6570\u636e\u5e93/i;
   return String(markdown || '')
     .replace(/\r\n/g, '\n')
-    .split(/\n{2,}/)
-    .map(block => block.trim())
-    .map(block => block
-      .split('\n')
-      .filter(line => line.trim() && !sourcePattern.test(line))
-      .join('\n')
-      .trim())
-    .filter(Boolean)
-    .join('\n\n')
     .trim();
 }
 
